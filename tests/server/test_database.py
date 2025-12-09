@@ -31,7 +31,9 @@ class TestDatabaseCreation:
     def test_uses_wal_mode(self, tmp_path) -> None:
         """Database should use WAL mode for concurrency."""
         db = Database(tmp_path / "test.db")
-        result = db._conn.execute("PRAGMA journal_mode").fetchone()
+        with db._engine.connect() as conn:
+            result = conn.exec_driver_sql("PRAGMA journal_mode").fetchone()
+        assert result is not None
         assert result[0].lower() == "wal"
         db.close()
 
@@ -78,10 +80,10 @@ class TestMachineOperations:
 
     def test_machine_name_unique(self, db: Database) -> None:
         """Machine names should be unique."""
-        import sqlite3
+        from sqlalchemy.exc import IntegrityError
 
         db.create_machine("same-name", "Windows")
-        with pytest.raises(sqlite3.IntegrityError):
+        with pytest.raises(IntegrityError):
             db.create_machine("same-name", "Linux")
 
 
@@ -228,12 +230,14 @@ class TestFileMetadataOperations:
         machine = db.create_machine("test", "Linux")
         db.create_file("test.txt", 100, "hash", machine.id)
         db.delete_file("test.txt", machine.id)
-        # Force old deletion date
-        db._conn.execute(
-            "UPDATE files SET deleted_at = ? WHERE path = ?",
-            ((datetime.now(UTC) - timedelta(days=31)).isoformat(), "test.txt")
-        )
-        db._conn.commit()
+        # Force old deletion date using SQLAlchemy
+        old_date = (datetime.now(UTC) - timedelta(days=31)).isoformat()
+        with db._engine.connect() as conn:
+            conn.exec_driver_sql(
+                "UPDATE files SET deleted_at = ? WHERE path = ?",
+                (old_date, "test.txt"),
+            )
+            conn.commit()
         purged = db.purge_trash(older_than_days=30)
         assert purged == 1
         assert db.get_file("test.txt") is None

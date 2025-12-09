@@ -13,7 +13,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
-from syncagent.server.database import ConflictError, Database, FileMetadata, Machine, Token
+from syncagent.server.database import ConflictError, Database
+from syncagent.server.models import FileMetadata, Machine, Token
 
 # Global security scheme
 _security = HTTPBearer(auto_error=False)
