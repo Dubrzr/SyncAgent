@@ -10,7 +10,13 @@ Zero-Knowledge End-to-End Encrypted (E2EE) file synchronization system.
 ## Installation
 
 ```bash
-pip install -e ".[dev]"
+# Create virtual environment
+python -m venv .venv
+.venv\Scripts\activate  # Windows
+# source .venv/bin/activate  # Linux/macOS
+
+# Install with all dependencies
+pip install -e ".[all]"
 ```
 
 ## Usage

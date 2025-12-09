@@ -2,6 +2,7 @@
 
 import hashlib
 import os
+import random
 from pathlib import Path
 
 import pytest
@@ -117,14 +118,16 @@ class TestCDCStability:
 
     def test_insertion_only_affects_nearby_chunks(self) -> None:
         """Inserting data should only affect chunks near the insertion point."""
-        # Create base data
-        base = os.urandom(20 * 1024 * 1024)  # 20 MB
+        # Use seeded random for deterministic test
+        rng = random.Random(42)
+        base = bytes(rng.getrandbits(8) for _ in range(20 * 1024 * 1024))  # 20 MB
         base_chunks = list(chunk_bytes(base))
         base_hashes = {chunk.hash for chunk in base_chunks}
 
         # Insert data in the middle
         insert_point = len(base) // 2
-        inserted = base[:insert_point] + os.urandom(1000) + base[insert_point:]
+        insert_data = bytes(rng.getrandbits(8) for _ in range(1000))
+        inserted = base[:insert_point] + insert_data + base[insert_point:]
         inserted_chunks = list(chunk_bytes(inserted))
         inserted_hashes = {chunk.hash for chunk in inserted_chunks}
 
