@@ -1,5 +1,6 @@
 """Tests for protocol handler module."""
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -178,7 +179,7 @@ class TestOpenFile:
             open_file(tmp_path / "nonexistent.txt")
 
     @patch("syncagent.client.protocol.platform.system", return_value="Windows")
-    @patch("syncagent.client.protocol.os.startfile")
+    @patch.object(os, "startfile", create=True)
     def test_open_file_windows(
         self, mock_startfile: MagicMock, mock_system: MagicMock, tmp_path: Path
     ) -> None:

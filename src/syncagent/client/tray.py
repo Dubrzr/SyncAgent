@@ -22,13 +22,16 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 # pystray import with fallback
+# Note: On Linux, pystray may fail to import if no display is available (e.g., headless CI)
 PYSTRAY_AVAILABLE: bool
 try:
     import pystray
     from pystray import Icon, Menu, MenuItem
 
     PYSTRAY_AVAILABLE = True
-except ImportError:
+except (ImportError, Exception):
+    # ImportError: pystray not installed
+    # Exception: pystray fails to connect to display (e.g., Xlib.error.DisplayNameError)
     PYSTRAY_AVAILABLE = False
     pystray = None  # type: ignore[assignment]
     Icon = None  # noqa: N806  # type: ignore[misc]
