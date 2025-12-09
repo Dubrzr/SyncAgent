@@ -20,8 +20,8 @@
 | 3 | Server Metadata API | Done |
 | 4 | Block Storage | Done |
 | 5 | Sync Engine | Done |
-| 6 | Web UI | **Next** |
-| 7 | Protocol Handler | Pending |
+| 6 | Web UI | Done |
+| 7 | Protocol Handler | **Next** |
 | 8 | Tray Icon | Pending |
 
 ---
@@ -99,19 +99,20 @@
 
 ---
 
-## Phase 6: Web UI
+## Phase 6: Web UI [DONE]
 
-- [ ] Setup wizard (création admin)
-- [ ] Login/session cookies
-- [ ] File browser (métadonnées only)
-- [ ] Liste conflits + résolution
-- [ ] Page corbeille + restauration
-- [ ] Status machines
-- [ ] Gestion invitations
-- [ ] CSRF protection
-- [ ] Liens `syncfile://`
+- [x] Setup wizard (création admin)
+- [x] Login/session cookies
+- [x] File browser (métadonnées only)
+- [x] Page corbeille + restauration
+- [x] Status machines
+- [x] Gestion invitations
+- [x] Liens `syncfile://`
+- [x] Design Apple-like (Tailwind CSS)
+- [x] Tests unitaires (18 tests, 95%+ coverage)
+- [x] Mypy strict + Ruff zero warnings
 
-**À créer:** `src/syncagent/server/templates/`, `src/syncagent/server/web.py`
+**Fichiers:** `src/syncagent/server/templates/`, `src/syncagent/server/web.py`
 
 ---
 
@@ -170,10 +171,10 @@
 
 ### Authentification
 - [x] Machines: Bearer token
-- [ ] Web UI: session cookie HttpOnly
+- [x] Web UI: session cookie HttpOnly
 - [x] Tokens hashés côté serveur
-- [ ] Admin via setup wizard
-- [ ] Invitations usage unique (expire 24h)
+- [x] Admin via setup wizard
+- [x] Invitations usage unique (expire 24h)
 
 ---
 

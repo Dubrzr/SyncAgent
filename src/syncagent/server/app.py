@@ -323,7 +323,7 @@ def create_app(db: Database, storage: ChunkStorage | None = None) -> FastAPI:
         _auth: Token = Depends(get_current_token),
     ) -> FileResponse:
         """Restore a file from trash."""
-        db.restore_file(path)
+        db.restore_file_by_path(path)
         file = db.get_file(path)
         if file is None:
             raise HTTPException(

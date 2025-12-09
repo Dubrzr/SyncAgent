@@ -220,7 +220,7 @@ class TestFileMetadataOperations:
         machine = db.create_machine("test", "Linux")
         db.create_file("test.txt", 100, "hash", machine.id)
         db.delete_file("test.txt", machine.id)
-        db.restore_file("test.txt")
+        db.restore_file_by_path("test.txt")
         file = db.get_file("test.txt")
         assert file is not None
         assert file.deleted_at is None

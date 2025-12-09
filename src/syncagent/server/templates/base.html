@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}SyncAgent{% endblock %}</title>
+
+    <!-- Tailwind CSS via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['-apple-system', 'BlinkMacSystemFont', 'SF Pro Display', 'SF Pro Text', 'Helvetica Neue', 'Arial', 'sans-serif'],
+                    },
+                    colors: {
+                        'apple-blue': '#007AFF',
+                        'apple-gray': {
+                            50: '#F5F5F7',
+                            100: '#E8E8ED',
+                            200: '#D2D2D7',
+                            300: '#AEAEB2',
+                            400: '#8E8E93',
+                            500: '#636366',
+                            600: '#48484A',
+                            700: '#3A3A3C',
+                            800: '#2C2C2E',
+                            900: '#1C1C1E',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+
+    <!-- HTMX -->
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+
+    <style>
+        /* Apple-like smooth transitions */
+        * {
+            transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        /* Custom focus ring */
+        .focus-ring:focus {
+            outline: none;
+            box-shadow: 0 0 0 4px rgba(0, 122, 255, 0.3);
+        }
+
+        /* Subtle hover effect */
+        .hover-lift:hover {
+            transform: translateY(-1px);
+        }
+
+        /* Loading spinner */
+        .htmx-request .htmx-indicator {
+            display: inline-block;
+        }
+        .htmx-indicator {
+            display: none;
+        }
+
+        /* Toast animations */
+        @keyframes slideIn {
+            from { transform: translateY(-100%); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+        .toast {
+            animation: slideIn 0.3s ease;
+        }
+    </style>
+
+    {% block head %}{% endblock %}
+</head>
+<body class="h-full bg-apple-gray-50 font-sans antialiased">
+    {% block body %}{% endblock %}
+
+    <!-- Toast container -->
+    <div id="toast-container" class="fixed top-4 right-4 z-50 space-y-2">
+        {% if flash_message %}
+        <div class="toast bg-white rounded-xl shadow-lg border border-apple-gray-200 px-4 py-3 flex items-center gap-3">
+            {% if flash_type == 'success' %}
+            <svg class="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
+            </svg>
+            {% elif flash_type == 'error' %}
+            <svg class="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+            </svg>
+            {% endif %}
+            <span class="text-apple-gray-800 text-sm">{{ flash_message }}</span>
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>

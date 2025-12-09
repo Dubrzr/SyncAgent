@@ -1,0 +1,98 @@
+{% extends "dashboard.html" %}
+
+{% block content %}
+<div class="space-y-6">
+    <!-- Header -->
+    <div>
+        <h1 class="text-2xl font-semibold text-apple-gray-900">Machines</h1>
+        <p class="mt-1 text-sm text-apple-gray-500">Connected devices syncing files</p>
+    </div>
+
+    <!-- Machines Grid -->
+    {% if machines %}
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {% for machine in machines %}
+        <div class="bg-white rounded-2xl border border-apple-gray-200 p-5 shadow-sm hover:shadow-md transition-shadow">
+            <div class="flex items-start justify-between">
+                <div class="flex items-center gap-3">
+                    <!-- Device icon based on platform -->
+                    <div class="w-12 h-12 bg-apple-gray-100 rounded-xl flex items-center justify-center">
+                        {% if 'windows' in machine.platform.lower() %}
+                        <svg class="w-6 h-6 text-apple-blue" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M3 5.548l7.389-1.008v7.133H3V5.548zM3 12.673h7.389v7.132L3 18.797v-6.124zM11.389 4.389L21 3v8.673h-9.611V4.389zM11.389 12.673H21V21l-9.611-1.462v-6.865z"/>
+                        </svg>
+                        {% elif 'darwin' in machine.platform.lower() or 'macos' in machine.platform.lower() %}
+                        <svg class="w-6 h-6 text-apple-gray-700" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.81-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/>
+                        </svg>
+                        {% else %}
+                        <svg class="w-6 h-6 text-orange-500" fill="currentColor" viewBox="0 0 24 24">
+                            <path d="M12.504 0c-.155 0-.311.001-.465.003-.658.014-1.316.063-1.965.167-1.304.209-2.575.644-3.69 1.324-1.116.68-2.09 1.589-2.867 2.638-.777 1.05-1.35 2.247-1.68 3.52-.165.633-.265 1.285-.302 1.944-.037.659-.007 1.333.089 1.99.191 1.315.629 2.59 1.31 3.707.68 1.118 1.593 2.096 2.648 2.875 1.054.779 2.252 1.352 3.526 1.682.636.166 1.292.267 1.953.304.33.018.663.027.994.027.331 0 .664-.009.994-.027.66-.037 1.316-.138 1.953-.304 1.274-.33 2.472-.903 3.526-1.682 1.055-.779 1.968-1.757 2.648-2.875.681-1.117 1.119-2.392 1.31-3.707.096-.657.126-1.331.089-1.99-.037-.659-.137-1.311-.302-1.944-.33-1.273-.903-2.47-1.68-3.52-.777-1.049-1.751-1.958-2.867-2.638-1.115-.68-2.386-1.115-3.69-1.324-.649-.104-1.307-.153-1.965-.167-.154-.002-.31-.003-.465-.003z"/>
+                        </svg>
+                        {% endif %}
+                    </div>
+                    <div>
+                        <h3 class="text-sm font-semibold text-apple-gray-900">{{ machine.name }}</h3>
+                        <p class="text-xs text-apple-gray-500 capitalize">{{ machine.platform }}</p>
+                    </div>
+                </div>
+
+                <!-- Status indicator -->
+                {% set minutes_ago = ((now - machine.last_seen).total_seconds() / 60) | int %}
+                {% if minutes_ago < 5 %}
+                <div class="flex items-center gap-1.5">
+                    <div class="w-2 h-2 bg-green-500 rounded-full"></div>
+                    <span class="text-xs text-green-600">Online</span>
+                </div>
+                {% else %}
+                <div class="flex items-center gap-1.5">
+                    <div class="w-2 h-2 bg-apple-gray-300 rounded-full"></div>
+                    <span class="text-xs text-apple-gray-400">Offline</span>
+                </div>
+                {% endif %}
+            </div>
+
+            <div class="mt-4 pt-4 border-t border-apple-gray-100">
+                <div class="flex items-center justify-between text-xs">
+                    <span class="text-apple-gray-500">Last seen</span>
+                    <span class="text-apple-gray-700">
+                        {% if minutes_ago < 1 %}
+                            Just now
+                        {% elif minutes_ago < 60 %}
+                            {{ minutes_ago }}m ago
+                        {% elif minutes_ago < 1440 %}
+                            {{ (minutes_ago / 60) | int }}h ago
+                        {% else %}
+                            {{ (minutes_ago / 1440) | int }}d ago
+                        {% endif %}
+                    </span>
+                </div>
+                <div class="flex items-center justify-between text-xs mt-2">
+                    <span class="text-apple-gray-500">Registered</span>
+                    <span class="text-apple-gray-700">{{ machine.created_at.strftime('%b %d, %Y') }}</span>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <!-- Empty state -->
+    <div class="bg-white rounded-2xl border border-apple-gray-200 px-6 py-16 text-center">
+        <div class="mx-auto w-16 h-16 bg-apple-gray-100 rounded-2xl flex items-center justify-center mb-4">
+            <svg class="w-8 h-8 text-apple-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                    d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
+            </svg>
+        </div>
+        <h3 class="text-sm font-medium text-apple-gray-900">No machines registered</h3>
+        <p class="mt-1 text-sm text-apple-gray-500 max-w-md mx-auto">
+            Create an invitation to add your first machine.
+        </p>
+        <a href="/invitations"
+           class="mt-4 inline-flex items-center px-4 py-2 bg-apple-blue text-white text-sm font-medium rounded-xl hover:bg-blue-600">
+            Create Invitation
+        </a>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

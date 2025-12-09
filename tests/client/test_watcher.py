@@ -251,12 +251,18 @@ class TestFileWatcher:
             event.set()
 
         with FileWatcher(watch_dir, on_changes, sync_delay_s=0.1):
-            time.sleep(0.1)
+            time.sleep(0.2)  # Wait for watcher to be ready
 
             # Delete the file
             test_file.unlink()
 
-            assert event.wait(timeout=2.0), "Timeout waiting for changes"
+            # Wait for deletion to be detected (may take longer on some platforms)
+            timeout = 3.0
+            start = time.time()
+            while time.time() - start < timeout:
+                if any(c.change_type == ChangeType.DELETED for c in changes):
+                    break
+                event.wait(timeout=0.5)
 
         deleted = [c for c in changes if c.change_type == ChangeType.DELETED]
         assert any(c.path.name == "todelete.txt" for c in deleted)

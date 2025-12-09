@@ -122,3 +122,63 @@ class Chunk(Base):
 
     # Relationships
     file: Mapped[FileMetadata] = relationship("FileMetadata", back_populates="chunks")
+
+
+class Admin(Base):
+    """Represents the admin user for Web UI (single admin only)."""
+
+    __tablename__ = "admin"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
+    username: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+
+class Session(Base):
+    """Represents an admin session for Web UI."""
+
+    __tablename__ = "sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+
+    # Indexes
+    __table_args__ = (Index("idx_sessions_token", "token_hash"),)
+
+
+class Invitation(Base):
+    """Represents an invitation token for machine registration."""
+
+    __tablename__ = "invitations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_by_machine_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("machines.id"), nullable=True
+    )
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    used_by_machine: Mapped[Machine | None] = relationship("Machine")
+
+    # Indexes
+    __table_args__ = (Index("idx_invitations_token", "token_hash"),)

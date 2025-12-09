@@ -17,9 +17,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sqlalchemy import create_engine, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
-from syncagent.server.models import Base, Chunk, FileMetadata, Machine, Token
+from syncagent.server.models import Admin, Base, Chunk, FileMetadata, Invitation, Machine, Token
+from syncagent.server.models import Session as SessionModel
 
 if TYPE_CHECKING:
     from sqlalchemy import Engine
@@ -383,8 +384,23 @@ class Database:
                 session.expunge(file)
             return files
 
-    def restore_file(self, path: str) -> None:
+    # Alias for web UI
+    list_deleted_files = list_trash
+
+    def restore_file(self, file_id: int) -> None:
         """Restore a file from trash.
+
+        Args:
+            file_id: File ID.
+        """
+        with self._session() as session:
+            file = session.get(FileMetadata, file_id)
+            if file:
+                file.deleted_at = None
+                session.commit()
+
+    def restore_file_by_path(self, path: str) -> None:
+        """Restore a file from trash by path.
 
         Args:
             path: File path.
@@ -395,6 +411,38 @@ class Database:
             if file:
                 file.deleted_at = None
                 session.commit()
+
+    def permanently_delete_file(self, file_id: int) -> None:
+        """Permanently delete a file.
+
+        Args:
+            file_id: File ID.
+        """
+        with self._session() as session:
+            file = session.get(FileMetadata, file_id)
+            if file:
+                # Also delete associated chunks
+                for chunk in list(file.chunks):
+                    session.delete(chunk)
+                session.delete(file)
+                session.commit()
+
+    def empty_trash(self) -> int:
+        """Permanently delete all files in trash.
+
+        Returns:
+            Number of files deleted.
+        """
+        with self._session() as session:
+            stmt = select(FileMetadata).where(FileMetadata.deleted_at.is_not(None))
+            files = list(session.execute(stmt).scalars().all())
+            count = len(files)
+            for file in files:
+                for chunk in list(file.chunks):
+                    session.delete(chunk)
+                session.delete(file)
+            session.commit()
+            return count
 
     def purge_trash(self, older_than_days: int = 30) -> int:
         """Permanently delete old trash items.
@@ -466,3 +514,273 @@ class Database:
             )
             chunks = session.execute(chunk_stmt).scalars().all()
             return [chunk.chunk_hash for chunk in chunks]
+
+    # === Admin operations ===
+
+    def needs_setup(self) -> bool:
+        """Check if initial setup is required.
+
+        Returns:
+            True if no admin exists.
+        """
+        with self._session() as session:
+            stmt = select(Admin).where(Admin.id == 1)
+            admin = session.execute(stmt).scalar_one_or_none()
+            return admin is None
+
+    def create_admin(self, username: str, password_hash: str) -> Admin:
+        """Create the admin user.
+
+        Args:
+            username: Admin username.
+            password_hash: Argon2id hashed password.
+
+        Returns:
+            Created Admin object.
+
+        Raises:
+            ValueError: If admin already exists.
+        """
+        if not self.needs_setup():
+            raise ValueError("Admin already exists")
+
+        with self._session() as session:
+            admin = Admin(id=1, username=username, password_hash=password_hash)
+            session.add(admin)
+            session.commit()
+            session.refresh(admin)
+            session.expunge(admin)
+            return admin
+
+    def get_admin(self) -> Admin | None:
+        """Get the admin user.
+
+        Returns:
+            Admin if exists, None otherwise.
+        """
+        with self._session() as session:
+            admin = session.get(Admin, 1)
+            if admin:
+                session.expunge(admin)
+            return admin
+
+    # === Session operations ===
+
+    def create_session(
+        self,
+        expires_in: timedelta = timedelta(hours=24),
+        user_agent: str | None = None,
+        ip_address: str | None = None,
+    ) -> tuple[str, SessionModel]:
+        """Create a new admin session.
+
+        Args:
+            expires_in: Session expiration duration.
+            user_agent: Client user agent.
+            ip_address: Client IP address.
+
+        Returns:
+            Tuple of (raw_session_token, Session object).
+        """
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hash_token(raw_token)
+        now = datetime.now(UTC)
+        expires_at = now + expires_in
+
+        with self._session() as session:
+            sess = SessionModel(
+                token_hash=token_hash,
+                created_at=now,
+                expires_at=expires_at,
+                user_agent=user_agent,
+                ip_address=ip_address,
+            )
+            session.add(sess)
+            session.commit()
+            session.refresh(sess)
+            session.expunge(sess)
+            return raw_token, sess
+
+    def validate_session(self, raw_token: str) -> SessionModel | None:
+        """Validate a session token.
+
+        Args:
+            raw_token: Raw session token.
+
+        Returns:
+            Session if valid, None otherwise.
+        """
+        token_hash = hash_token(raw_token)
+        with self._session() as session:
+            stmt = select(SessionModel).where(SessionModel.token_hash == token_hash)
+            sess = session.execute(stmt).scalar_one_or_none()
+
+            if sess is None:
+                return None
+
+            # Check expiration
+            now = datetime.now(UTC)
+            expires_at = sess.expires_at
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=UTC)
+            if expires_at < now:
+                return None
+
+            session.expunge(sess)
+            return sess
+
+    def delete_session(self, raw_token: str) -> None:
+        """Delete a session (logout).
+
+        Args:
+            raw_token: Raw session token.
+        """
+        token_hash = hash_token(raw_token)
+        with self._session() as session:
+            stmt = select(SessionModel).where(SessionModel.token_hash == token_hash)
+            sess = session.execute(stmt).scalar_one_or_none()
+            if sess:
+                session.delete(sess)
+                session.commit()
+
+    def cleanup_expired_sessions(self) -> int:
+        """Delete all expired sessions.
+
+        Returns:
+            Number of sessions deleted.
+        """
+        now = datetime.now(UTC)
+        with self._session() as session:
+            stmt = select(SessionModel).where(SessionModel.expires_at < now)
+            sessions = list(session.execute(stmt).scalars().all())
+            count = len(sessions)
+            for sess in sessions:
+                session.delete(sess)
+            session.commit()
+            return count
+
+    # === Invitation operations ===
+
+    def create_invitation(
+        self,
+        expires_in: timedelta = timedelta(hours=24),
+    ) -> tuple[str, Invitation]:
+        """Create a new machine invitation.
+
+        Args:
+            expires_in: Invitation expiration duration.
+
+        Returns:
+            Tuple of (raw_invitation_token, Invitation object).
+        """
+        raw_token = "INV-" + secrets.token_urlsafe(16)
+        token_hash = hash_token(raw_token)
+        now = datetime.now(UTC)
+        expires_at = now + expires_in
+
+        with self._session() as session:
+            invitation = Invitation(
+                token_hash=token_hash,
+                created_at=now,
+                expires_at=expires_at,
+            )
+            session.add(invitation)
+            session.commit()
+            session.refresh(invitation)
+            session.expunge(invitation)
+            return raw_token, invitation
+
+    def validate_invitation(self, raw_token: str) -> Invitation | None:
+        """Validate an invitation token.
+
+        Args:
+            raw_token: Raw invitation token.
+
+        Returns:
+            Invitation if valid (not used, not expired), None otherwise.
+        """
+        token_hash = hash_token(raw_token)
+        with self._session() as session:
+            stmt = select(Invitation).where(
+                Invitation.token_hash == token_hash,
+                Invitation.used_by_machine_id.is_(None),
+            )
+            invitation = session.execute(stmt).scalar_one_or_none()
+
+            if invitation is None:
+                return None
+
+            # Check expiration
+            now = datetime.now(UTC)
+            expires_at = invitation.expires_at
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=UTC)
+            if expires_at < now:
+                return None
+
+            session.expunge(invitation)
+            return invitation
+
+    def use_invitation(self, raw_token: str, machine_id: int) -> None:
+        """Mark an invitation as used.
+
+        Args:
+            raw_token: Raw invitation token.
+            machine_id: ID of machine that used it.
+        """
+        token_hash = hash_token(raw_token)
+        with self._session() as session:
+            stmt = select(Invitation).where(Invitation.token_hash == token_hash)
+            invitation = session.execute(stmt).scalar_one_or_none()
+            if invitation:
+                invitation.used_by_machine_id = machine_id
+                invitation.used_at = datetime.now(UTC)
+                session.commit()
+
+    def list_invitations(self) -> list[Invitation]:
+        """List all invitations.
+
+        Returns:
+            List of all invitations.
+        """
+        with self._session() as session:
+            stmt = (
+                select(Invitation)
+                .options(joinedload(Invitation.used_by_machine))
+                .order_by(Invitation.created_at.desc())
+            )
+            invitations = list(session.execute(stmt).scalars().unique().all())
+            for inv in invitations:
+                session.expunge(inv)
+            return invitations
+
+    def delete_invitation(self, invitation_id: int) -> None:
+        """Delete an invitation.
+
+        Args:
+            invitation_id: Invitation ID.
+        """
+        with self._session() as session:
+            invitation = session.get(Invitation, invitation_id)
+            if invitation:
+                session.delete(invitation)
+                session.commit()
+
+    def cleanup_expired_invitations(self) -> int:
+        """Delete all expired unused invitations.
+
+        Returns:
+            Number of invitations deleted.
+        """
+        now = datetime.now(UTC)
+        with self._session() as session:
+            stmt = select(Invitation).where(
+                Invitation.expires_at < now,
+                Invitation.used_by_machine_id.is_(None),
+            )
+            invitations = list(session.execute(stmt).scalars().all())
+            count = len(invitations)
+            for inv in invitations:
+                session.delete(inv)
+            session.commit()
+            return count
