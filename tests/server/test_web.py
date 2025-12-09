@@ -7,7 +7,8 @@ from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 from syncagent.server.database import Database
-from syncagent.server.web import router as web_router, ph
+from syncagent.server.web import ph
+from syncagent.server.web import router as web_router
 
 
 @pytest.fixture
