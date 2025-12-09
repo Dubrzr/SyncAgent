@@ -20,6 +20,9 @@ classifiers = [
 ]
 
 dependencies = [
+    # CLI
+    "click>=8.1.0,<9.0.0",
+
     # Crypto
     "cryptography>=44.0.0,<45.0.0",
     "argon2-cffi>=25.1.0,<26.0.0",
@@ -73,7 +76,7 @@ all = [
 ]
 
 [project.scripts]
-syncagent = "syncagent.cli:main"
+syncagent = "syncagent.client.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/juliendubiel/syncagent"
