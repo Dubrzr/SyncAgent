@@ -73,6 +73,10 @@ dev = [
     "pytest-cov>=6.0.0",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
+    # Type stubs for mypy
+    "types-boto3>=1.0.0",
+    # S3 mocking
+    "moto>=5.0.0",
 ]
 
 all = [
@@ -125,7 +129,15 @@ warn_return_any = true
 warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
-module = ["fastcdc", "fastcdc.*", "keyring", "keyring.*", "boto3", "boto3.*", "botocore", "botocore.*", "mypy_boto3_s3"]
+module = [
+    "fastcdc", "fastcdc.*",
+    "keyring", "keyring.*",
+    "boto3", "boto3.*",
+    "botocore", "botocore.*",
+    "mypy_boto3_s3",
+    "sqlalchemy", "sqlalchemy.*",
+    "alembic", "alembic.*",
+]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
