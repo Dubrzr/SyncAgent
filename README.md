@@ -71,7 +71,7 @@ syncagent import-key <base64-key>
 
 ```bash
 # Start the server
-uvicorn syncagent.server.app:create_app --factory --host 0.0.0.0 --port 8000
+uvicorn syncagent.server.app:app_factory --factory --host 0.0.0.0 --port 8000
 
 # The first visit to the web UI will prompt you to create an admin account
 # Then create invitations to register client machines

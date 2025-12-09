@@ -394,3 +394,33 @@ def create_app(db: Database, storage: ChunkStorage | None = None) -> FastAPI:
         )
 
     return app
+
+
+def app_factory() -> FastAPI:
+    """Create FastAPI application with default configuration.
+
+    This factory function is designed to be used with uvicorn:
+        uvicorn syncagent.server.app:app_factory --factory --host 0.0.0.0 --port 8000
+
+    Uses:
+        - SQLite database at ./syncagent.db
+        - Local filesystem storage at ./storage/
+
+    Returns:
+        Configured FastAPI application.
+    """
+    from pathlib import Path
+
+    from syncagent.server.storage import create_storage
+
+    # Default paths
+    db_path = Path("syncagent.db")
+    storage_path = Path("storage")
+
+    # Create database
+    db = Database(db_path)
+
+    # Create local filesystem storage
+    storage = create_storage({"type": "local", "local_path": str(storage_path)})
+
+    return create_app(db, storage)
