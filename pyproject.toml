@@ -88,6 +88,9 @@ Issues = "https://github.com/juliendubiel/syncagent/issues"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.poetry]
+version = "1.0"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/syncagent"]
 
@@ -108,6 +111,7 @@ select = [
 ]
 ignore = [
     "E501",   # line too long (handled by formatter)
+    "B008",   # function call in default argument (FastAPI Depends pattern)
 ]
 
 [tool.ruff.lint.isort]
