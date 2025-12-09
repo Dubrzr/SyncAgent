@@ -21,8 +21,8 @@
 | 4 | Block Storage | Done |
 | 5 | Sync Engine | Done |
 | 6 | Web UI | Done |
-| 7 | Protocol Handler | **Next** |
-| 8 | Tray Icon | Pending |
+| 7 | Protocol Handler | Done |
+| 8 | Tray Icon | **Next** |
 
 ---
 
@@ -116,15 +116,18 @@
 
 ---
 
-## Phase 7: Protocol Handler
+## Phase 7: Protocol Handler [DONE]
 
-- [ ] Parsing URLs `syncfile://`
-- [ ] Enregistrement Windows (Registry)
-- [ ] Enregistrement macOS (LaunchServices)
-- [ ] Enregistrement Linux (.desktop)
-- [ ] Validation sécurité (path traversal)
+- [x] Parsing URLs `syncfile://`
+- [x] Enregistrement Windows (Registry)
+- [x] Enregistrement macOS (LaunchServices)
+- [x] Enregistrement Linux (.desktop)
+- [x] Validation sécurité (path traversal)
+- [x] CLI commands: register-protocol, unregister-protocol, open-url
+- [x] Tests unitaires (35 tests, 95%+ coverage)
+- [x] Mypy strict + Ruff zero warnings
 
-**À créer:** `src/syncagent/client/protocol.py`
+**Fichiers:** `src/syncagent/client/protocol.py`
 
 ---
 
