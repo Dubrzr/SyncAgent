@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from syncagent.client.state import FileStatus, LocalFile, SyncState
+from syncagent.client.state import FileStatus, SyncState
 
 
 class TestSyncStateCreation:
