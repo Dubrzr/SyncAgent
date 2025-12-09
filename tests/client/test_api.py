@@ -1,12 +1,10 @@
 """Tests for the SyncAgent HTTP client."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pytest
-from httpx import Response
 
 from syncagent.client.api import (
-    APIError,
     AuthenticationError,
     ConflictError,
     NotFoundError,
@@ -194,9 +192,8 @@ class TestSyncClient:
             json={"detail": "File not found"},
         )
 
-        with SyncClient("http://test", "token123") as client:
-            with pytest.raises(NotFoundError):
-                client.get_file("missing.txt")
+        with SyncClient("http://test", "token123") as client, pytest.raises(NotFoundError):
+            client.get_file("missing.txt")
 
     def test_create_file(self, httpx_mock) -> None:  # type: ignore[no-untyped-def]
         """Should create file on server."""
@@ -265,17 +262,17 @@ class TestSyncClient:
             json={"detail": "Version conflict: expected 3, got 5"},
         )
 
-        with SyncClient("http://test", "token123") as client:
-            with pytest.raises(ConflictError) as exc_info:
-                client.update_file(
-                    path="conflicted.txt",
-                    size=100,
-                    content_hash="hash",
-                    parent_version=3,
-                    chunks=[],
-                )
-
-        assert "Version conflict" in str(exc_info.value)
+        with (
+            SyncClient("http://test", "token123") as client,
+            pytest.raises(ConflictError, match="Version conflict"),
+        ):
+            client.update_file(
+                path="conflicted.txt",
+                size=100,
+                content_hash="hash",
+                parent_version=3,
+                chunks=[],
+            )
 
     def test_delete_file(self, httpx_mock) -> None:  # type: ignore[no-untyped-def]
         """Should delete file."""
@@ -332,9 +329,8 @@ class TestSyncClient:
             json={"detail": "Chunk not found"},
         )
 
-        with SyncClient("http://test", "token123") as client:
-            with pytest.raises(NotFoundError):
-                client.download_chunk("missing")
+        with SyncClient("http://test", "token123") as client, pytest.raises(NotFoundError):
+            client.download_chunk("missing")
 
     def test_chunk_exists_true(self, httpx_mock) -> None:  # type: ignore[no-untyped-def]
         """Should return True when chunk exists."""
@@ -366,9 +362,8 @@ class TestSyncClient:
             json={"detail": "Invalid token"},
         )
 
-        with SyncClient("http://test", "badtoken") as client:
-            with pytest.raises(AuthenticationError):
-                client.list_files()
+        with SyncClient("http://test", "badtoken") as client, pytest.raises(AuthenticationError):
+            client.list_files()
 
     def test_list_machines(self, httpx_mock) -> None:  # type: ignore[no-untyped-def]
         """Should list machines."""
