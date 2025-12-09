@@ -1,16 +1,18 @@
 """Tests for FastAPI server endpoints."""
 
 from collections.abc import Generator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
 from syncagent.server.app import create_app
 from syncagent.server.database import Database
+from syncagent.server.storage import LocalFSStorage
 
 
 @pytest.fixture
-def db(tmp_path) -> Generator[Database, None, None]:
+def db(tmp_path: Path) -> Generator[Database, None, None]:
     """Create a test database."""
     database = Database(tmp_path / "test.db")
     yield database
@@ -18,9 +20,22 @@ def db(tmp_path) -> Generator[Database, None, None]:
 
 
 @pytest.fixture
+def storage(tmp_path: Path) -> LocalFSStorage:
+    """Create a test storage."""
+    return LocalFSStorage(tmp_path / "chunks")
+
+
+@pytest.fixture
 def client(db: Database) -> TestClient:
-    """Create a test client with the app."""
+    """Create a test client with the app (no storage)."""
     app = create_app(db)
+    return TestClient(app)
+
+
+@pytest.fixture
+def client_with_storage(db: Database, storage: LocalFSStorage) -> TestClient:
+    """Create a test client with storage enabled."""
+    app = create_app(db, storage)
     return TestClient(app)
 
 
@@ -288,3 +303,154 @@ class TestChunkEndpoints:
         response = client.get("/api/chunks/large.bin", headers=auth_headers)
         assert response.status_code == 200
         assert response.json() == ["chunk1", "chunk2", "chunk3"]
+
+
+class TestChunkStorageEndpoints:
+    """Tests for chunk storage (blob) endpoints."""
+
+    def test_upload_chunk(
+        self, client_with_storage: TestClient, auth_headers: dict[str, str]
+    ) -> None:
+        """Should upload a chunk."""
+        chunk_hash = "a" * 64
+        chunk_data = b"encrypted chunk data"
+
+        response = client_with_storage.put(
+            f"/api/storage/chunks/{chunk_hash}",
+            headers=auth_headers,
+            content=chunk_data,
+        )
+        assert response.status_code == 201
+
+    def test_download_chunk(
+        self, client_with_storage: TestClient, auth_headers: dict[str, str]
+    ) -> None:
+        """Should download an uploaded chunk."""
+        chunk_hash = "b" * 64
+        chunk_data = b"test chunk content"
+
+        # Upload first
+        client_with_storage.put(
+            f"/api/storage/chunks/{chunk_hash}",
+            headers=auth_headers,
+            content=chunk_data,
+        )
+
+        # Download
+        response = client_with_storage.get(
+            f"/api/storage/chunks/{chunk_hash}",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+        assert response.content == chunk_data
+
+    def test_download_missing_chunk(
+        self, client_with_storage: TestClient, auth_headers: dict[str, str]
+    ) -> None:
+        """Should return 404 for missing chunk."""
+        response = client_with_storage.get(
+            "/api/storage/chunks/" + "c" * 64,
+            headers=auth_headers,
+        )
+        assert response.status_code == 404
+
+    def test_check_chunk_exists(
+        self, client_with_storage: TestClient, auth_headers: dict[str, str]
+    ) -> None:
+        """HEAD should return 200 for existing chunk."""
+        chunk_hash = "d" * 64
+
+        # Upload first
+        client_with_storage.put(
+            f"/api/storage/chunks/{chunk_hash}",
+            headers=auth_headers,
+            content=b"data",
+        )
+
+        response = client_with_storage.head(
+            f"/api/storage/chunks/{chunk_hash}",
+            headers=auth_headers,
+        )
+        assert response.status_code == 200
+
+    def test_check_chunk_not_exists(
+        self, client_with_storage: TestClient, auth_headers: dict[str, str]
+    ) -> None:
+        """HEAD should return 404 for missing chunk."""
+        response = client_with_storage.head(
+            "/api/storage/chunks/" + "e" * 64,
+            headers=auth_headers,
+        )
+        assert response.status_code == 404
+
+    def test_delete_chunk(
+        self, client_with_storage: TestClient, auth_headers: dict[str, str]
+    ) -> None:
+        """Should delete an existing chunk."""
+        chunk_hash = "f" * 64
+
+        # Upload first
+        client_with_storage.put(
+            f"/api/storage/chunks/{chunk_hash}",
+            headers=auth_headers,
+            content=b"data",
+        )
+
+        response = client_with_storage.delete(
+            f"/api/storage/chunks/{chunk_hash}",
+            headers=auth_headers,
+        )
+        assert response.status_code == 204
+
+        # Verify deleted
+        response = client_with_storage.head(
+            f"/api/storage/chunks/{chunk_hash}",
+            headers=auth_headers,
+        )
+        assert response.status_code == 404
+
+    def test_delete_missing_chunk(
+        self, client_with_storage: TestClient, auth_headers: dict[str, str]
+    ) -> None:
+        """Should return 404 when deleting missing chunk."""
+        response = client_with_storage.delete(
+            "/api/storage/chunks/" + "0" * 64,
+            headers=auth_headers,
+        )
+        assert response.status_code == 404
+
+    def test_upload_empty_chunk_rejected(
+        self, client_with_storage: TestClient, auth_headers: dict[str, str]
+    ) -> None:
+        """Should reject empty chunk data."""
+        response = client_with_storage.put(
+            "/api/storage/chunks/" + "1" * 64,
+            headers=auth_headers,
+            content=b"",
+        )
+        assert response.status_code == 400
+
+    def test_storage_requires_auth(self, client_with_storage: TestClient) -> None:
+        """Storage endpoints require authentication."""
+        chunk_hash = "2" * 64
+
+        response = client_with_storage.put(
+            f"/api/storage/chunks/{chunk_hash}",
+            content=b"data",
+        )
+        assert response.status_code == 401
+
+        response = client_with_storage.get(f"/api/storage/chunks/{chunk_hash}")
+        assert response.status_code == 401
+
+    def test_storage_not_configured(
+        self, client: TestClient, auth_headers: dict[str, str]
+    ) -> None:
+        """Should return 503 when storage not configured."""
+        response = client.put(
+            "/api/storage/chunks/" + "3" * 64,
+            headers=auth_headers,
+            content=b"data",
+        )
+        assert response.status_code == 503
+        assert "not configured" in response.json()["detail"]

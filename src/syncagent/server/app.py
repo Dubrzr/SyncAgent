@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 from syncagent.server.database import ConflictError, Database
 from syncagent.server.models import FileMetadata, Machine, Token
+from syncagent.server.storage import ChunkNotFoundError, ChunkStorage
 
 # Global security scheme
 _security = HTTPBearer(auto_error=False)
@@ -115,11 +116,12 @@ def file_to_response(file: FileMetadata) -> FileResponse:
 # === Application factory ===
 
 
-def create_app(db: Database) -> FastAPI:
-    """Create FastAPI application with database.
+def create_app(db: Database, storage: ChunkStorage | None = None) -> FastAPI:
+    """Create FastAPI application with database and storage.
 
     Args:
         db: Database instance.
+        storage: Optional ChunkStorage instance for blob storage.
 
     Returns:
         Configured FastAPI application.
@@ -130,13 +132,24 @@ def create_app(db: Database) -> FastAPI:
         version="0.1.0",
     )
 
-    # Store database in app state for access in dependencies
+    # Store database and storage in app state for access in dependencies
     app.state.db = db
+    app.state.storage = storage
 
     def get_db(request: Request) -> Database:
         """Get database from request state."""
         database: Database = request.app.state.db
         return database
+
+    def get_storage(request: Request) -> ChunkStorage:
+        """Get storage from request state."""
+        chunk_storage: ChunkStorage | None = request.app.state.storage
+        if chunk_storage is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Chunk storage not configured",
+            )
+        return chunk_storage
 
     def get_current_token(
         request: Request,
@@ -318,5 +331,66 @@ def create_app(db: Database) -> FastAPI:
                 detail=f"File not found: {path}",
             )
         return file_to_response(file)
+
+    # === Chunk storage endpoints ===
+
+    @app.put("/api/storage/chunks/{chunk_hash}")
+    async def upload_chunk(
+        chunk_hash: str,
+        request: Request,
+        _auth: Token = Depends(get_current_token),
+        chunk_storage: ChunkStorage = Depends(get_storage),
+    ) -> Response:
+        """Upload an encrypted chunk."""
+        data = await request.body()
+        if not data:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Empty chunk data",
+            )
+        chunk_storage.put(chunk_hash, data)
+        return Response(status_code=status.HTTP_201_CREATED)
+
+    @app.get("/api/storage/chunks/{chunk_hash}")
+    def download_chunk(
+        chunk_hash: str,
+        _auth: Token = Depends(get_current_token),
+        chunk_storage: ChunkStorage = Depends(get_storage),
+    ) -> Response:
+        """Download an encrypted chunk."""
+        try:
+            data = chunk_storage.get(chunk_hash)
+        except ChunkNotFoundError as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Chunk not found: {chunk_hash}",
+            ) from e
+        return Response(content=data, media_type="application/octet-stream")
+
+    @app.head("/api/storage/chunks/{chunk_hash}")
+    def check_chunk_exists(
+        chunk_hash: str,
+        _auth: Token = Depends(get_current_token),
+        chunk_storage: ChunkStorage = Depends(get_storage),
+    ) -> Response:
+        """Check if a chunk exists."""
+        if chunk_storage.exists(chunk_hash):
+            return Response(status_code=status.HTTP_200_OK)
+        return Response(status_code=status.HTTP_404_NOT_FOUND)
+
+    @app.delete("/api/storage/chunks/{chunk_hash}")
+    def delete_chunk(
+        chunk_hash: str,
+        _auth: Token = Depends(get_current_token),
+        chunk_storage: ChunkStorage = Depends(get_storage),
+    ) -> Response:
+        """Delete a chunk from storage."""
+        deleted = chunk_storage.delete(chunk_hash)
+        if deleted:
+            return Response(status_code=status.HTTP_204_NO_CONTENT)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Chunk not found: {chunk_hash}",
+        )
 
     return app

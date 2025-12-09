@@ -18,8 +18,8 @@
 | 1 | Crypto & Core | Done |
 | 2 | Content-Defined Chunking | Done |
 | 3 | Server Metadata API | Done |
-| 4 | Block Storage | **Next** |
-| 5 | Sync Engine | Pending |
+| 4 | Block Storage | Done |
+| 5 | Sync Engine | **Next** |
 | 6 | Web UI | Pending |
 | 7 | Protocol Handler | Pending |
 | 8 | Tray Icon | Pending |
@@ -67,17 +67,17 @@
 
 ---
 
-## Phase 4: Block Storage [IN PROGRESS]
+## Phase 4: Block Storage [DONE]
 
-- [ ] Interface abstraite `ChunkStorage`
-- [ ] Implémentation `LocalFSStorage` (dev/test)
-- [ ] Implémentation `S3Storage` (OVH/AWS/MinIO)
-- [ ] Factory `create_storage()`
-- [ ] API endpoints: upload/download chunks
-- [ ] Tests unitaires avec moto (mock S3)
-- [ ] Mypy strict + Ruff zero warnings
+- [x] Interface abstraite `ChunkStorage`
+- [x] Implémentation `LocalFSStorage` (dev/test)
+- [x] Implémentation `S3Storage` (OVH/AWS/MinIO)
+- [x] Factory `create_storage()`
+- [x] API endpoints: upload/download chunks
+- [x] Tests unitaires avec moto (mock S3)
+- [x] Mypy strict + Ruff zero warnings
 
-**À créer:** `src/syncagent/server/storage.py`
+**Fichiers:** `src/syncagent/server/storage.py`
 
 ---
 
