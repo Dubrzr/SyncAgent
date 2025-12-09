@@ -199,7 +199,7 @@ def open_file(file_path: Path) -> None:
     system = platform.system()
 
     if system == "Windows":
-        os.startfile(str(file_path))
+        os.startfile(str(file_path))  # type: ignore[attr-defined]
     elif system == "Darwin":  # macOS
         subprocess.run(["open", str(file_path)], check=True)
     else:  # Linux and others
@@ -266,7 +266,7 @@ def register_windows() -> None:
         raise RegistrationError("Windows registration only works on Windows")
 
     try:
-        import winreg
+        import winreg  # type: ignore[import-not-found]
 
         exe_path = _get_executable_path()
         command = f'{exe_path} open-url "%1"'
@@ -274,20 +274,20 @@ def register_windows() -> None:
         # Create HKEY_CURRENT_USER\Software\Classes\syncfile
         key_path = r"Software\Classes\syncfile"
 
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
-            winreg.SetValue(key, "", winreg.REG_SZ, "URL:SyncFile Protocol")
-            winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:  # type: ignore[attr-defined]
+            winreg.SetValue(key, "", winreg.REG_SZ, "URL:SyncFile Protocol")  # type: ignore[attr-defined]
+            winreg.SetValueEx(key, "URL Protocol", 0, winreg.REG_SZ, "")  # type: ignore[attr-defined]
 
         # Create shell\open\command subkey
         command_path = rf"{key_path}\shell\open\command"
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, command_path) as key:
-            winreg.SetValue(key, "", winreg.REG_SZ, command)
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, command_path) as key:  # type: ignore[attr-defined]
+            winreg.SetValue(key, "", winreg.REG_SZ, command)  # type: ignore[attr-defined]
 
         # Create DefaultIcon subkey (optional)
         icon_path = rf"{key_path}\DefaultIcon"
-        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, icon_path) as key:
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, icon_path) as key:  # type: ignore[attr-defined]
             # Use Python icon as default
-            winreg.SetValue(key, "", winreg.REG_SZ, f"{sys.executable},0")
+            winreg.SetValue(key, "", winreg.REG_SZ, f"{sys.executable},0")  # type: ignore[attr-defined]
 
     except Exception as e:
         raise RegistrationError(f"Failed to register on Windows: {e}") from e
@@ -303,25 +303,25 @@ def unregister_windows() -> None:
         raise RegistrationError("Windows unregistration only works on Windows")
 
     try:
-        import winreg
+        import winreg  # type: ignore[import-not-found]
 
         key_path = r"Software\Classes\syncfile"
 
         # Delete subkeys first (registry requires this)
         def delete_key_recursive(root: int, path: str) -> None:
             try:
-                with winreg.OpenKey(root, path, 0, winreg.KEY_ALL_ACCESS) as key:
+                with winreg.OpenKey(root, path, 0, winreg.KEY_ALL_ACCESS) as key:  # type: ignore[attr-defined]
                     while True:
                         try:
-                            subkey = winreg.EnumKey(key, 0)
+                            subkey = winreg.EnumKey(key, 0)  # type: ignore[attr-defined]
                             delete_key_recursive(root, f"{path}\\{subkey}")
                         except OSError:
                             break
-                winreg.DeleteKey(root, path)
+                winreg.DeleteKey(root, path)  # type: ignore[attr-defined]
             except FileNotFoundError:
                 pass  # Key doesn't exist
 
-        delete_key_recursive(winreg.HKEY_CURRENT_USER, key_path)
+        delete_key_recursive(winreg.HKEY_CURRENT_USER, key_path)  # type: ignore[attr-defined]
 
     except Exception as e:
         raise RegistrationError(f"Failed to unregister on Windows: {e}") from e
@@ -583,11 +583,11 @@ def is_registered() -> bool:
 
     try:
         if system == "Windows":
-            import winreg
+            import winreg  # type: ignore[import-not-found]
 
             try:
-                with winreg.OpenKey(
-                    winreg.HKEY_CURRENT_USER,
+                with winreg.OpenKey(  # type: ignore[attr-defined]
+                    winreg.HKEY_CURRENT_USER,  # type: ignore[attr-defined]
                     r"Software\Classes\syncfile\shell\open\command"
                 ):
                     return True

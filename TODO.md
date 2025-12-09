@@ -22,7 +22,7 @@
 | 5 | Sync Engine | Done |
 | 6 | Web UI | Done |
 | 7 | Protocol Handler | Done |
-| 8 | Tray Icon | **Next** |
+| 8 | Tray Icon | Done |
 
 ---
 
@@ -131,13 +131,16 @@
 
 ---
 
-## Phase 8: Tray Icon
+## Phase 8: Tray Icon [DONE]
 
-- [ ] pystray setup
-- [ ] Icônes par état (idle, syncing, error, conflict)
-- [ ] Menu contextuel (sync now, open folder, quit)
+- [x] pystray setup with optional dependency
+- [x] Icônes par état (idle, syncing, error, conflict, offline, paused)
+- [x] Menu contextuel (sync now, open folder, open dashboard, pause/resume, quit)
+- [x] CLI command: `syncagent tray`
+- [x] Tests unitaires (41 tests, 95%+ coverage)
+- [x] Mypy strict + Ruff zero warnings
 
-**À créer:** `src/syncagent/client/tray.py`
+**Fichiers:** `src/syncagent/client/tray.py`
 
 ---
 

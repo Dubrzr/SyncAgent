@@ -8,6 +8,7 @@ Provides commands for:
 - register-protocol: Register syncfile:// URL handler
 - unregister-protocol: Unregister syncfile:// URL handler
 - open-url: Handle a syncfile:// URL
+- tray: Start the system tray icon
 """
 
 from __future__ import annotations
@@ -249,6 +250,64 @@ def protocol_status() -> None:
     else:
         click.echo("Protocol handler: NOT REGISTERED")
         click.echo("Run 'syncagent register-protocol' to enable syncfile:// links.")
+
+
+@cli.command()
+@click.option(
+    "--dashboard-url",
+    default="http://localhost:8000",
+    help="URL to the web dashboard.",
+)
+def tray(dashboard_url: str) -> None:
+    """Start the system tray icon.
+
+    Runs the SyncAgent tray icon in the background, providing:
+    - Status indicators (idle, syncing, error, conflict)
+    - Quick access to sync folder and dashboard
+    - Sync control (pause/resume, sync now)
+
+    Requires pystray and pillow: pip install syncagent[tray]
+    """
+    try:
+        from syncagent.client.tray import PYSTRAY_AVAILABLE, SyncAgentTray, TrayCallbacks
+    except ImportError:
+        click.echo(
+            "Error: Tray dependencies not installed.\n"
+            "Install with: pip install syncagent[tray]",
+            err=True,
+        )
+        sys.exit(1)
+
+    if not PYSTRAY_AVAILABLE:
+        click.echo(
+            "Error: pystray not available.\n"
+            "Install with: pip install pystray pillow",
+            err=True,
+        )
+        sys.exit(1)
+
+    sync_folder = get_sync_folder()
+
+    # Create sync folder if it doesn't exist
+    if not sync_folder.exists():
+        sync_folder.mkdir(parents=True)
+        click.echo(f"Created sync folder: {sync_folder}")
+
+    def on_quit() -> None:
+        click.echo("SyncAgent tray icon stopped.")
+
+    callbacks = TrayCallbacks(on_quit=on_quit)
+
+    click.echo("Starting SyncAgent tray icon...")
+    click.echo(f"Sync folder: {sync_folder}")
+    click.echo(f"Dashboard: {dashboard_url}")
+    click.echo("Press Ctrl+C or use tray menu to quit.")
+
+    try:
+        tray_icon = SyncAgentTray(sync_folder, dashboard_url, callbacks)
+        tray_icon.start(blocking=True)
+    except KeyboardInterrupt:
+        click.echo("\nStopping tray icon...")
 
 
 def main() -> None:

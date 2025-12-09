@@ -138,8 +138,19 @@ module = [
     "mypy_boto3_s3",
     "sqlalchemy", "sqlalchemy.*",
     "alembic", "alembic.*",
+    "PIL", "PIL.*",
+    "pystray", "pystray.*",
+    "winreg",
 ]
 ignore_missing_imports = true
+
+# Files with platform-specific code that need different type: ignore comments on different platforms
+[[tool.mypy.overrides]]
+module = [
+    "syncagent.client.protocol",
+    "syncagent.client.tray",
+]
+warn_unused_ignores = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
