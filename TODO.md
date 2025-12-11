@@ -268,7 +268,7 @@
 
 ### Autres (Julien)
 - [x] Possibilité d'enlever une machine depuis la wui
-- [ ] On doit pouvoir configurer dans le syncagent init le nom de la machine (entrée pour le nom par défaut)
+- [x] On doit pouvoir configurer dans le syncagent register le nom de la machine (entrée pour le nom par défaut)
 - [ ] Voir des statistiques sur chaque machine dans la wui: nombre de fichiers exactement synchronisés sur cette machine, place utilisée sur le storage
 - [ ] Que se passe-t-il si un fichier est supprimé, puis à sa place (même path/nom de fichier) un nouveau est créé, et que j'essaye de restaurer le fichier supprimé (qui est censé arrivé à son original location?)
 

@@ -63,7 +63,10 @@ def init() -> None:
         click.echo("Error: SyncAgent already initialized.", err=True)
         click.echo(f"Keystore exists at: {config_dir / 'keyfile.json'}", err=True)
         click.echo("\nTo start over, delete the config directory:")
-        click.echo(f"  rm -rf {config_dir}")
+        if sys.platform == "win32":
+            click.echo(f'  rmdir /s /q "{config_dir}"')
+        else:
+            click.echo(f"  rm -rf {config_dir}")
         sys.exit(1)
 
     click.echo("Welcome to SyncAgent!")
