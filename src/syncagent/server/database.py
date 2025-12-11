@@ -160,6 +160,31 @@ class Database:
                 machine.last_seen = datetime.now(UTC)
                 session.commit()
 
+    def delete_machine(self, machine_id: int) -> bool:
+        """Delete a machine and its associated tokens.
+
+        Args:
+            machine_id: Machine ID.
+
+        Returns:
+            True if machine was deleted, False if not found.
+        """
+        with self._session() as session:
+            machine = session.get(Machine, machine_id)
+            if not machine:
+                return False
+
+            # Delete associated tokens first
+            stmt = select(Token).where(Token.machine_id == machine_id)
+            tokens = list(session.execute(stmt).scalars().all())
+            for token in tokens:
+                session.delete(token)
+
+            # Delete the machine
+            session.delete(machine)
+            session.commit()
+            return True
+
     # === Token operations ===
 
     def create_token(

@@ -342,6 +342,18 @@ async def machines_page(
     )
 
 
+@router.post("/machines/{machine_id}/delete")
+async def delete_machine(
+    request: Request,
+    machine_id: int,
+    admin: Annotated[tuple[str, str], Depends(get_current_admin)],
+) -> RedirectResponse:
+    """Delete a machine."""
+    db = get_db(request)
+    db.delete_machine(machine_id)
+    return RedirectResponse(url="/machines", status_code=302)
+
+
 # ---------------------------------------------------------------------------
 # Invitations
 # ---------------------------------------------------------------------------

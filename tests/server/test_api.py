@@ -129,6 +129,35 @@ class TestMachineEndpoints:
         machines = response.json()
         assert len(machines) >= 2
 
+    def test_delete_machine(
+        self, client: TestClient, auth_headers: dict[str, str], db: Database
+    ) -> None:
+        """Should delete a machine."""
+        machine = db.create_machine("to-delete", "Linux")
+        response = client.delete(
+            f"/api/machines/{machine.id}",
+            headers=auth_headers,
+        )
+        assert response.status_code == 204
+        # Verify it's deleted
+        assert db.get_machine(machine.id) is None
+
+    def test_delete_machine_not_found(
+        self, client: TestClient, auth_headers: dict[str, str]
+    ) -> None:
+        """Should return 404 for non-existent machine."""
+        response = client.delete(
+            "/api/machines/99999",
+            headers=auth_headers,
+        )
+        assert response.status_code == 404
+
+    def test_delete_machine_requires_auth(self, client: TestClient, db: Database) -> None:
+        """Deleting machine requires authentication."""
+        machine = db.create_machine("no-auth-delete", "Windows")
+        response = client.delete(f"/api/machines/{machine.id}")
+        assert response.status_code == 401
+
 
 class TestAuthEndpoints:
     """Tests for authentication."""

@@ -266,6 +266,9 @@
 - [x] Admin via setup wizard
 - [x] Invitations usage unique (expire 24h)
 
+### Autres (Julien)
+- [x] Possibilité d'enlever une machine depuis la wui
+- [ ] Voir des statistiques sur chaque machine dans la wui: nombre de fichiers exactement synchronisés sur cette machine, place utilisée sur le storage
 ---
 
 ## Requirements Non-Fonctionnels

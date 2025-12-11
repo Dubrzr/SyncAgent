@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from syncagent.server.api.deps import get_current_token, get_db
 from syncagent.server.database import Database
@@ -63,3 +63,19 @@ def list_machines(
     """List all registered machines."""
     machines = db.list_machines()
     return [machine_to_response(m) for m in machines]
+
+
+@router.delete("/{machine_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_machine(
+    machine_id: int,
+    db: Database = Depends(get_db),
+    _auth: Token = Depends(get_current_token),
+) -> Response:
+    """Delete a machine and revoke its tokens."""
+    deleted = db.delete_machine(machine_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Machine {machine_id} not found",
+        )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
