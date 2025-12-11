@@ -26,6 +26,7 @@ class FileStatus(Enum):
     PENDING_UPLOAD = "pending_upload"  # Queued for upload
     CONFLICT = "conflict"  # Conflict detected
     NEW = "new"  # New local file, not on server
+    DELETED = "deleted"  # Locally deleted, needs server deletion
 
 
 @dataclass
@@ -315,6 +316,15 @@ class SyncState:
     def mark_conflict(self, path: str) -> None:
         """Mark a file as having a conflict."""
         self.update_file(path, status=FileStatus.CONFLICT)
+
+    def mark_deleted(self, path: str) -> None:
+        """Mark a file as locally deleted (needs server deletion)."""
+        self.update_file(path, status=FileStatus.DELETED)
+
+    def remove_file(self, path: str) -> None:
+        """Remove a file from the state database."""
+        self._conn.execute("DELETE FROM files WHERE path = ?", (path,))
+        self._conn.commit()
 
     # === Pending uploads ===
 

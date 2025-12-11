@@ -603,6 +603,11 @@ def sync(watch: bool, no_progress: bool) -> None:
             if progress_bar:
                 progress_bar.close()
 
+            # Display deleted files
+            if result.deleted:
+                for path in result.deleted:
+                    click.echo(f"  ✗ {path} (deleted)")
+
             # Display results summary
             if result.conflicts:
                 click.echo(click.style("\nConflicts:", fg="yellow"))
@@ -615,13 +620,14 @@ def sync(watch: bool, no_progress: bool) -> None:
                     click.echo(f"  ✗ {error}")
 
             # Summary
-            total = len(result.uploaded) + len(result.downloaded)
+            total = len(result.uploaded) + len(result.downloaded) + len(result.deleted)
             if total == 0 and not result.conflicts and not result.errors:
                 click.echo("Everything is up to date.")
             else:
                 click.echo(
                     f"\nSync complete: {len(result.uploaded)} uploaded, "
                     f"{len(result.downloaded)} downloaded, "
+                    f"{len(result.deleted)} deleted, "
                     f"{len(result.conflicts)} conflicts"
                 )
 

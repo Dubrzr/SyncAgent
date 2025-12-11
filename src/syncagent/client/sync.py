@@ -302,6 +302,7 @@ class SyncResult:
 
     uploaded: list[str]
     downloaded: list[str]
+    deleted: list[str]
     conflicts: list[str]
     errors: list[str]
 
@@ -338,19 +339,21 @@ class SyncEngine:
         """Perform a full sync operation.
 
         Returns:
-            SyncResult with lists of uploaded, downloaded, and conflict files.
+            SyncResult with lists of uploaded, downloaded, deleted, and conflict files.
         """
         uploaded: list[str] = []
         downloaded: list[str] = []
+        deleted: list[str] = []
         conflicts: list[str] = []
         errors: list[str] = []
 
-        # 0. Scan local folder for new/modified files
+        # 0. Scan local folder for new/modified/deleted files
         self._scan_local_changes()
 
-        # 1. Push local changes to server
+        # 1. Push local changes to server (including deletions)
         push_result = self._push_changes()
         uploaded.extend(push_result["uploaded"])
+        deleted.extend(push_result["deleted"])
         conflicts.extend(push_result["conflicts"])
         errors.extend(push_result["errors"])
 
@@ -362,6 +365,7 @@ class SyncEngine:
         return SyncResult(
             uploaded=uploaded,
             downloaded=downloaded,
+            deleted=deleted,
             conflicts=conflicts,
             errors=errors,
         )
@@ -462,11 +466,12 @@ class SyncEngine:
         return result
 
     def _scan_local_changes(self) -> None:
-        """Scan local folder for new or modified files.
+        """Scan local folder for new, modified, or deleted files.
 
         Walks the sync folder and compares with the state database to find:
         - New files (not in state DB)
         - Modified files (different mtime or size)
+        - Deleted files (in state DB but not on disk)
         """
         import os
 
@@ -476,6 +481,9 @@ class SyncEngine:
         ignore = IgnorePatterns()
         syncignore_path = self._base_path / ".syncignore"
         ignore.load_from_file(syncignore_path)
+
+        # Track files found on disk
+        found_paths: set[str] = set()
 
         for root_str, dirs, files in os.walk(self._base_path):
             root = Path(root_str)
@@ -495,6 +503,7 @@ class SyncEngine:
                 relative_path = str(file_path.relative_to(self._base_path))
                 # Normalize path separators
                 relative_path = relative_path.replace("\\", "/")
+                found_paths.add(relative_path)
 
                 local_file = self._state.get_file(relative_path)
                 stat = file_path.stat()
@@ -519,13 +528,22 @@ class SyncEngine:
                         logger.debug(f"Found modified local file: {relative_path}")
                         self._state.mark_modified(relative_path)
 
+        # Check for deleted files (in state DB but not on disk)
+        synced_files = self._state.list_files(status=FileStatus.SYNCED)
+        for local_file in synced_files:
+            if local_file.path not in found_paths:
+                # File was deleted locally
+                logger.debug(f"Found deleted local file: {local_file.path}")
+                self._state.mark_deleted(local_file.path)
+
     def _push_changes(self) -> dict[str, list[str]]:
         """Push local changes to server.
 
         Returns:
-            Dict with uploaded, conflicts, and errors lists.
+            Dict with uploaded, deleted, conflicts, and errors lists.
         """
         uploaded: list[str] = []
+        deleted: list[str] = []
         conflicts: list[str] = []
         errors: list[str] = []
 
@@ -555,7 +573,24 @@ class SyncEngine:
                 errors.append(f"{path}: {e}")
                 self._state.mark_upload_attempt(path, error=str(e))
 
-        return {"uploaded": uploaded, "conflicts": conflicts, "errors": errors}
+        # Process deletions
+        deleted_files = self._state.list_files(status=FileStatus.DELETED)
+        for local_file in deleted_files:
+            try:
+                self._client.delete_file(local_file.path)
+                self._state.remove_file(local_file.path)
+                deleted.append(local_file.path)
+                logger.info(f"Deleted {local_file.path} from server")
+            except NotFoundError:
+                # File already deleted on server, just clean up local state
+                self._state.remove_file(local_file.path)
+                deleted.append(local_file.path)
+                logger.debug(f"File {local_file.path} already deleted on server")
+            except Exception as e:
+                logger.error(f"Failed to delete {local_file.path}: {e}")
+                errors.append(f"{local_file.path}: {e}")
+
+        return {"uploaded": uploaded, "deleted": deleted, "conflicts": conflicts, "errors": errors}
 
     def _pull_changes(self) -> dict[str, list[str]]:
         """Pull remote changes from server.
