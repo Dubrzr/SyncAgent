@@ -12,7 +12,7 @@ Provides a modern web interface for:
 import secrets
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated, Any
 
 import argon2
 from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request, Response
@@ -20,6 +20,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from syncagent.server.database import Database
+
+if TYPE_CHECKING:
+    from syncagent.server.models import FileMetadata
 
 # Password hasher
 ph = argon2.PasswordHasher()
@@ -274,10 +277,60 @@ async def logout(
 # Dashboard / Files
 # ---------------------------------------------------------------------------
 
+def build_file_tree(files: "list[FileMetadata]") -> dict[str, Any]:
+    """Build a hierarchical file tree from flat file list.
+
+    Returns a nested dict structure:
+    {
+        "name": "root",
+        "type": "folder",
+        "children": {
+            "folder1": {
+                "name": "folder1",
+                "type": "folder",
+                "children": {...}
+            },
+            "file.txt": {
+                "name": "file.txt",
+                "type": "file",
+                "file": <FileMetadata object>
+            }
+        }
+    }
+    """
+    root: dict[str, Any] = {"name": "", "type": "folder", "children": {}}
+
+    for file in files:
+        parts = file.path.split("/")
+        current = root
+
+        # Navigate/create folders
+        for part in parts[:-1]:
+            if part not in current["children"]:
+                current["children"][part] = {
+                    "name": part,
+                    "type": "folder",
+                    "children": {},
+                }
+            current = current["children"][part]
+
+        # Add file
+        filename = parts[-1]
+        current["children"][filename] = {
+            "name": filename,
+            "type": "file",
+            "file": file,
+            "path": file.path,
+        }
+
+    return root
+
+
 @router.get("/", response_class=HTMLResponse)
 async def files_page(
     request: Request,
     admin: Annotated[tuple[str, str] | None, Depends(optional_admin)],
+    path: str = "",
 ) -> Response:
     """Show files page (main dashboard)."""
     db = get_db(request)
@@ -293,6 +346,29 @@ async def files_page(
     # Get all active files
     files = db.list_files()
 
+    # Build file tree
+    file_tree = build_file_tree(files)
+
+    # Navigate to current path
+    current_folder = file_tree
+    breadcrumbs = []
+    if path:
+        parts = path.strip("/").split("/")
+        current_path = ""
+        for part in parts:
+            current_path = f"{current_path}/{part}".strip("/")
+            breadcrumbs.append({"name": part, "path": current_path})
+            if part in current_folder.get("children", {}):
+                current_folder = current_folder["children"][part]
+            else:
+                # Path not found, redirect to root
+                return RedirectResponse(url="/", status_code=302)
+
+    # Get items in current folder, sorted (folders first, then files)
+    items = list(current_folder.get("children", {}).values())
+    folders = sorted([i for i in items if i["type"] == "folder"], key=lambda x: x["name"].lower())
+    files_list = sorted([i for i in items if i["type"] == "file"], key=lambda x: x["name"].lower())
+
     return templates.TemplateResponse(
         "files.html",
         {
@@ -300,7 +376,11 @@ async def files_page(
             "csrf_token": get_csrf_token(session_token),
             "admin_username": admin_username,
             "active_tab": "files",
-            "files": files,
+            "folders": folders,
+            "files": files_list,
+            "current_path": path,
+            "breadcrumbs": breadcrumbs,
+            "total_files": len(files),
         }
     )
 
