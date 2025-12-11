@@ -468,8 +468,9 @@ def protocol_status() -> None:
         click.echo("Run 'syncagent register-protocol' to enable syncfile:// links.")
 
 
-def format_size(size: int) -> str:
+def format_size(size_bytes: int) -> str:
     """Format file size in human-readable format."""
+    size = float(size_bytes)
     for unit in ["B", "KB", "MB", "GB"]:
         if size < 1024:
             return f"{size:.1f} {unit}"
@@ -571,14 +572,14 @@ def sync(watch: bool) -> None:
 
     if watch:
         # Continuous sync with file watching
-        from syncagent.client.watcher import FileWatcher
+        from syncagent.client.watcher import FileChange, FileWatcher
 
         click.echo("Watching for changes... (Ctrl+C to stop)\n")
 
         # Initial sync
         run_sync()
 
-        def on_changes(changes: list) -> None:
+        def on_changes(changes: list[FileChange]) -> None:
             """Handle file changes."""
             click.echo(f"\nDetected {len(changes)} change(s), syncing...")
             # Mark changed files for upload
