@@ -111,7 +111,9 @@ def init() -> None:
         click.echo("\n2. Open http://localhost:8000 and create an admin account")
         click.echo("\n3. Go to 'Invitations' and create a token for this machine")
         click.echo("\n4. Register this machine with the server:")
-        click.echo("   syncagent register --server http://localhost:8000 --token <invitation-token>")
+        click.echo(
+            "   syncagent register --server http://localhost:8000 --token <invitation-token>"
+        )
 
     except KeyStoreError as e:
         click.echo(f"Error: {e}", err=True)
@@ -143,8 +145,8 @@ def reset(force: bool) -> None:
 
     if not force:
         click.echo("WARNING: This will delete your SyncAgent configuration, including:")
-        click.echo(f"  - Encryption key (keyfile.json)")
-        click.echo(f"  - Server registration (config.json)")
+        click.echo("  - Encryption key (keyfile.json)")
+        click.echo("  - Server registration (config.json)")
         click.echo(f"\nConfig directory: {config_dir}")
         click.echo("\nYour sync folder and files will NOT be deleted.")
         click.echo("\nMake sure you have exported your encryption key if needed:")
@@ -319,14 +321,11 @@ def register(server: str, token: str, name: str | None) -> None:
 
     # Determine machine name
     default_name = socket.gethostname()
-    if name:
-        machine_name = name
-    else:
-        machine_name = click.prompt(
-            "Machine name",
-            default=default_name,
-            show_default=True,
-        )
+    machine_name = name or click.prompt(
+        "Machine name",
+        default=default_name,
+        show_default=True,
+    )
     machine_platform = platform.system().lower()
 
     click.echo(f"\nRegistering machine '{machine_name}' with server...")
@@ -482,16 +481,14 @@ def tray(dashboard_url: str) -> None:
         from syncagent.client.tray import PYSTRAY_AVAILABLE, SyncAgentTray, TrayCallbacks
     except ImportError:
         click.echo(
-            "Error: Tray dependencies not installed.\n"
-            "Install with: pip install syncagent[tray]",
+            "Error: Tray dependencies not installed.\n" "Install with: pip install syncagent[tray]",
             err=True,
         )
         sys.exit(1)
 
     if not PYSTRAY_AVAILABLE:
         click.echo(
-            "Error: pystray not available.\n"
-            "Install with: pip install pystray pillow",
+            "Error: pystray not available.\n" "Install with: pip install pystray pillow",
             err=True,
         )
         sys.exit(1)
