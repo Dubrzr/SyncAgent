@@ -277,10 +277,18 @@ def register(server: str, token: str, name: str | None) -> None:
             sys.exit(0)
 
     # Determine machine name
-    machine_name = name or socket.gethostname()
+    default_name = socket.gethostname()
+    if name:
+        machine_name = name
+    else:
+        machine_name = click.prompt(
+            "Machine name",
+            default=default_name,
+            show_default=True,
+        )
     machine_platform = platform.system().lower()
 
-    click.echo(f"Registering machine '{machine_name}' with server...")
+    click.echo(f"\nRegistering machine '{machine_name}' with server...")
 
     # Call the registration API
     try:
