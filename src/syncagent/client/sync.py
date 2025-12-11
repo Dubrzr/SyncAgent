@@ -385,6 +385,15 @@ class SyncEngine:
         parent_version = None
         if local_file and local_file.server_version:
             parent_version = local_file.server_version
+        else:
+            # Check if file exists on server (handles case where local state is out of sync)
+            try:
+                server_file = self._client.get_file(relative_path)
+                parent_version = server_file.version
+                logger.debug(f"File {relative_path} exists on server with version {parent_version}")
+            except NotFoundError:
+                # File truly doesn't exist on server, will be created
+                pass
 
         try:
             result = self._uploader.upload_file(
