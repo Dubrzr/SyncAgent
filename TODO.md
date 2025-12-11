@@ -28,6 +28,7 @@
 | 11 | Trash Auto-Purge | Pending |
 | 12 | Resume Sync | Pending |
 | 13 | Integration Tests | Pending |
+| 14 | Sync Optimizations | Pending |
 
 ---
 
@@ -228,6 +229,49 @@
 
 ---
 
+## Phase 14: Sync Optimizations (State of the Art)
+
+**Objectif:** Atteindre les performances des solutions cloud comme GDrive/OneDrive/Dropbox
+
+### Haute Priorité
+
+- [ ] **Delta sync (rsync-like)**: Ne transférer que les blocs modifiés d'un fichier au lieu du fichier entier
+  - Utiliser rolling checksum (Rabin fingerprint) pour détecter les parties inchangées
+  - Réduire drastiquement la bande passante pour les gros fichiers modifiés
+- [ ] **Sync incrémental serveur**: API `/api/changes?since=timestamp` au lieu de lister tous les fichiers
+  - Table `change_log` avec (file_id, action, timestamp)
+  - Réduire la charge serveur et le temps de sync initial
+- [ ] **Résolution de conflits interactive**: UI pour choisir quelle version garder
+  - Créer copie locale `fichier.conflict-<machine>-<timestamp>.ext`
+  - Comparaison côte-à-côte des versions
+
+### Moyenne Priorité
+
+- [ ] **Sync sélectif**: Choisir quels dossiers synchroniser
+  - Config `.syncfolders` pour inclure/exclure des chemins
+  - UI pour gérer les dossiers synchronisés
+- [ ] **Fichiers à la demande (placeholder files)**: Comme OneDrive "Files On-Demand"
+  - Fichiers non téléchargés localement, téléchargement à l'ouverture
+  - Nécessite intégration OS (Cloud Files API Windows, FUSE Linux)
+- [ ] **Versioning accessible**: Historique des versions via UI
+  - `GET /api/files/{path}/versions` - liste des versions
+  - Restauration d'une version spécifique
+- [ ] **Pause/Resume uploads**: Reprendre un upload interrompu au niveau chunk
+  - Stockage de la progression par chunk
+  - Vérification des chunks déjà uploadés avant reprise
+
+### Basse Priorité
+
+- [ ] **Bandwidth throttling**: Limiter la bande passante utilisée
+  - Config `max_upload_speed`, `max_download_speed`
+- [ ] **LAN sync (peer-to-peer)**: Sync direct entre machines sur le même réseau
+  - Découverte mDNS/Bonjour
+  - Transfert direct sans passer par le serveur
+
+**Fichiers:** `src/syncagent/client/sync.py`, `src/syncagent/client/delta.py`, `src/syncagent/server/api/changes.py`
+
+---
+
 ## Requirements Fonctionnels
 
 ### Synchronisation
@@ -271,6 +315,10 @@
 - [x] On doit pouvoir configurer dans le syncagent register le nom de la machine (entrée pour le nom par défaut)
 - [ ] Voir des statistiques sur chaque machine dans la wui: nombre de fichiers exactement synchronisés sur cette machine, place utilisée sur le storage
 - [ ] Que se passe-t-il si un fichier est supprimé, puis à sa place (même path/nom de fichier) un nouveau est créé, et que j'essaye de restaurer le fichier supprimé (qui est censé arrivé à son original location?)
+- [x] L'affichage logique des fichiers dans l'UI doit gérer une hierarchie de dossiers/fichiers, pas tous les fichiers à plat
+- [ ] Quand le serveur est lancé; il doit indiquer où il stocke ses chunks
+- [x] La commande sync doit afficher une barre de progression des fichiers actuellement en cours de synchro
+- [x] Détection et synchronisation des fichiers supprimés localement
 
 ---
 
