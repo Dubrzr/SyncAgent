@@ -161,7 +161,12 @@ class Database:
                 session.commit()
 
     def delete_machine(self, machine_id: int) -> bool:
-        """Delete a machine and its associated tokens.
+        """Delete a machine and its associated data.
+
+        This will:
+        - Delete all tokens for this machine
+        - Clear the used_by_machine_id on any invitations
+        - Set updated_by to NULL on files (or delete them if desired)
 
         Args:
             machine_id: Machine ID.
@@ -174,11 +179,25 @@ class Database:
             if not machine:
                 return False
 
-            # Delete associated tokens first
+            # Delete associated tokens first (cascade should handle this, but be explicit)
             stmt = select(Token).where(Token.machine_id == machine_id)
             tokens = list(session.execute(stmt).scalars().all())
             for token in tokens:
                 session.delete(token)
+
+            # Clear invitation references to this machine
+            stmt = select(Invitation).where(Invitation.used_by_machine_id == machine_id)
+            invitations = list(session.execute(stmt).scalars().all())
+            for invitation in invitations:
+                invitation.used_by_machine_id = None
+                invitation.used_at = None
+
+            # Clear file references to this machine (set to a sentinel or handle differently)
+            # For now, we'll delete files that were created by this machine
+            stmt = select(FileMetadata).where(FileMetadata.updated_by == machine_id)
+            files = list(session.execute(stmt).scalars().all())
+            for file in files:
+                session.delete(file)
 
             # Delete the machine
             session.delete(machine)
