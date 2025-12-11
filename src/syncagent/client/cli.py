@@ -112,10 +112,6 @@ def init() -> None:
         click.echo("\n3. Go to 'Invitations' and create a token for this machine")
         click.echo("\n4. Register this machine with the server:")
         click.echo("   syncagent register --server http://localhost:8000 --token <invitation-token>")
-        click.echo("\n5. Start syncing:")
-        click.echo("   syncagent sync")
-        click.echo("\nOr run with system tray icon (requires pystray):")
-        click.echo("   syncagent tray")
 
     except KeyStoreError as e:
         click.echo(f"Error: {e}", err=True)
@@ -374,8 +370,6 @@ def register(server: str, token: str, name: str | None) -> None:
         click.echo(f"Server: {server}")
         click.echo(f"Machine ID: {machine_info['id']}")
         click.echo(f"Machine name: {machine_info['name']}")
-        click.echo("\nYou can now start syncing with:")
-        click.echo("  syncagent sync")
 
     except httpx.ConnectError:
         click.echo(f"Error: Could not connect to server at {server}", err=True)
