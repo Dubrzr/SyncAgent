@@ -165,8 +165,8 @@ class Database:
 
         This will:
         - Delete all tokens for this machine
-        - Clear the used_by_machine_id on any invitations
-        - Set updated_by to NULL on files (or delete them if desired)
+        - Delete invitations used by this machine (invitations are one-time use)
+        - Delete files uploaded by this machine
 
         Args:
             machine_id: Machine ID.
@@ -185,12 +185,11 @@ class Database:
             for token in tokens:
                 session.delete(token)
 
-            # Clear invitation references to this machine
+            # Delete invitations that were used by this machine (one-time use)
             stmt = select(Invitation).where(Invitation.used_by_machine_id == machine_id)
             invitations = list(session.execute(stmt).scalars().all())
             for invitation in invitations:
-                invitation.used_by_machine_id = None
-                invitation.used_at = None
+                session.delete(invitation)
 
             # Clear file references to this machine (set to a sentinel or handle differently)
             # For now, we'll delete files that were created by this machine
