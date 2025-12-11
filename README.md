@@ -35,6 +35,8 @@ Zero-Knowledge End-to-End Encrypted (E2EE) file synchronization system.
 
 ## Installation
 
+### From Source (Development)
+
 ```bash
 # Clone the repository
 git clone https://github.com/Dubrzr/file-sync-ssh.git
@@ -45,42 +47,109 @@ python -m venv .venv
 .venv\Scripts\activate  # Windows
 # source .venv/bin/activate  # Linux/macOS
 
-# Install with all dependencies
+# Install client only
+pip install -e .
+
+# Install with server dependencies
+pip install -e ".[server]"
+
+# Install with all dependencies (client + server + dev)
 pip install -e ".[all]"
+
+# Install with optional tray icon support
+pip install -e ".[tray]"
+```
+
+### Client Only (pip)
+
+```bash
+# Install from PyPI (when published)
+pip install syncagent
+
+# Or install directly from GitHub
+pip install git+https://github.com/Dubrzr/file-sync-ssh.git
 ```
 
 ## Quick Start
 
-### Client Setup
+### 1. Server Setup
 
-```bash
-# Initialize SyncAgent with a master password
-syncagent init
-
-# Unlock the keystore (required before sync operations)
-syncagent unlock
-
-# Export key for sharing with other machines
-syncagent export-key
-
-# Import key on another machine
-syncagent import-key <base64-key>
-```
-
-### Server Setup
+First, set up the server (can be on a remote machine or locally):
 
 ```bash
 # Start the server
 uvicorn syncagent.server.app:app --host 0.0.0.0 --port 8000
 
-# The first visit to the web UI will prompt you to create an admin account
-# Then create invitations to register client machines
+# Open http://localhost:8000 in your browser
+# Create an admin account on first visit
+# Go to "Invitations" and create an invitation token for your client
 ```
 
-### Environment Variables (Server)
+### 2. Client Setup
+
+On each machine you want to sync:
 
 ```bash
-# Required
+# Initialize SyncAgent with a master password
+# This creates your encryption key (stored in OS keyring)
+syncagent init
+
+# Files will be synced to ~/SyncAgent by default
+```
+
+### 3. Register with Server
+
+```bash
+# Register this machine with the server using an invitation token
+syncagent register --server https://your-server:8000 --token <invitation-token>
+```
+
+### 4. Share Key with Other Machines
+
+To sync the same files on multiple machines, they need the same encryption key:
+
+```bash
+# On the first machine: export the key
+syncagent export-key
+# Output: base64-encoded key (keep this secret!)
+
+# On other machines: import the key
+syncagent import-key <base64-key>
+```
+
+### 5. Start Syncing
+
+```bash
+# Unlock the keystore (required before sync operations)
+syncagent unlock
+
+# Start the sync daemon
+syncagent sync
+
+# Or run with system tray icon (requires pystray)
+syncagent tray
+```
+
+### CLI Commands Reference
+
+```bash
+syncagent init              # Initialize keystore with master password
+syncagent unlock            # Unlock keystore for sync operations
+syncagent export-key        # Export encryption key (base64)
+syncagent import-key KEY    # Import encryption key from another machine
+syncagent register          # Register machine with server
+syncagent sync              # Start sync daemon
+syncagent tray              # Start with system tray icon
+syncagent register-protocol # Register syncfile:// URL handler
+syncagent protocol-status   # Check if URL handler is registered
+```
+
+## Server Deployment
+
+### Environment Variables
+
+```bash
+# Database path (default: ./syncagent.db)
 SYNCAGENT_DB_PATH=/path/to/syncagent.db
 
 # S3 Storage (optional, defaults to local filesystem)
@@ -90,8 +159,20 @@ SYNCAGENT_S3_ACCESS_KEY=your-access-key
 SYNCAGENT_S3_SECRET_KEY=your-secret-key
 SYNCAGENT_S3_REGION=region
 
-# Local Storage (development)
+# Local Storage path (default: ./storage)
 SYNCAGENT_STORAGE_PATH=/path/to/chunks
+```
+
+### Production Deployment
+
+```bash
+# Using gunicorn with uvicorn workers
+pip install gunicorn
+gunicorn syncagent.server.app:app -w 4 -k uvicorn.workers.UvicornWorker -b 0.0.0.0:8000
+
+# With HTTPS (recommended)
+gunicorn syncagent.server.app:app -w 4 -k uvicorn.workers.UvicornWorker \
+  -b 0.0.0.0:443 --certfile=cert.pem --keyfile=key.pem
 ```
 
 ## Web Dashboard
@@ -146,14 +227,24 @@ src/syncagent/
 │   ├── state.py        # Sync state management
 │   ├── api.py          # HTTP client for server
 │   ├── sync.py         # Sync engine (push/pull)
+│   ├── tray.py         # System tray icon (pystray)
+│   ├── protocol.py     # syncfile:// URL handler
 │   └── cli.py          # Command-line interface
 └── server/
-    ├── app.py          # FastAPI application
+    ├── app.py          # FastAPI application entry point
     ├── database.py     # SQLAlchemy ORM operations
     ├── models.py       # Database models
+    ├── schemas.py      # Pydantic request/response models
     ├── storage.py      # Chunk storage (Local/S3)
-    ├── web.py          # Web UI routes
-    └── templates/      # Jinja2 templates
+    ├── api/            # REST API routes (JSON)
+    │   ├── deps.py     # FastAPI dependencies
+    │   ├── machines.py # Machine management
+    │   ├── files.py    # File operations
+    │   ├── trash.py    # Trash operations
+    │   └── chunks.py   # Chunk storage
+    └── web/            # Web UI routes (HTML)
+        ├── router.py   # Dashboard routes
+        └── templates/  # Jinja2 templates
 ```
 
 ## Documentation
