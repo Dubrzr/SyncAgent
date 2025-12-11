@@ -62,11 +62,8 @@ def init() -> None:
     if (config_dir / "keyfile.json").exists():
         click.echo("Error: SyncAgent already initialized.", err=True)
         click.echo(f"Keystore exists at: {config_dir / 'keyfile.json'}", err=True)
-        click.echo("\nTo start over, delete the config directory:")
-        if sys.platform == "win32":
-            click.echo(f'  rmdir /s /q "{config_dir}"')
-        else:
-            click.echo(f"  rm -rf {config_dir}")
+        click.echo("\nTo start over, run:")
+        click.echo("  syncagent reset")
         sys.exit(1)
 
     click.echo("Welcome to SyncAgent!")
@@ -122,6 +119,51 @@ def init() -> None:
 
     except KeyStoreError as e:
         click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+
+@cli.command()
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Skip confirmation prompt.",
+)
+def reset(force: bool) -> None:
+    """Reset SyncAgent configuration.
+
+    Deletes the config directory (~/.syncagent) to allow re-initialization.
+    This will NOT delete your sync folder or synced files.
+
+    WARNING: This will delete your encryption key! Make sure you have
+    exported it first if you need to recover your files.
+    """
+    import shutil
+
+    config_dir = get_config_dir()
+
+    if not config_dir.exists():
+        click.echo("Nothing to reset. SyncAgent is not initialized.")
+        return
+
+    if not force:
+        click.echo("WARNING: This will delete your SyncAgent configuration, including:")
+        click.echo(f"  - Encryption key (keyfile.json)")
+        click.echo(f"  - Server registration (config.json)")
+        click.echo(f"\nConfig directory: {config_dir}")
+        click.echo("\nYour sync folder and files will NOT be deleted.")
+        click.echo("\nMake sure you have exported your encryption key if needed:")
+        click.echo("  syncagent export-key\n")
+
+        if not click.confirm("Are you sure you want to reset?"):
+            click.echo("Aborted.")
+            return
+
+    try:
+        shutil.rmtree(config_dir)
+        click.echo("SyncAgent configuration has been reset.")
+        click.echo("Run 'syncagent init' to set up again.")
+    except OSError as e:
+        click.echo(f"Error deleting config directory: {e}", err=True)
         sys.exit(1)
 
 
