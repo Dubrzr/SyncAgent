@@ -286,6 +286,9 @@ class SyncEngine:
         conflicts: list[str] = []
         errors: list[str] = []
 
+        # 0. Scan local folder for new/modified files
+        self._scan_local_changes()
+
         # 1. Push local changes to server
         push_result = self._push_changes()
         uploaded.extend(push_result["uploaded"])
@@ -398,6 +401,64 @@ class SyncEngine:
             )
 
         return result
+
+    def _scan_local_changes(self) -> None:
+        """Scan local folder for new or modified files.
+
+        Walks the sync folder and compares with the state database to find:
+        - New files (not in state DB)
+        - Modified files (different mtime or size)
+        """
+        import os
+
+        from syncagent.client.watcher import IgnorePatterns
+
+        # Use the same ignore patterns as the watcher
+        ignore = IgnorePatterns()
+        syncignore_path = self._base_path / ".syncignore"
+        ignore.load_from_file(syncignore_path)
+
+        for root_str, dirs, files in os.walk(self._base_path):
+            root = Path(root_str)
+
+            # Filter out ignored directories
+            dirs[:] = [
+                d for d in dirs
+                if not ignore.should_ignore(root / d, self._base_path)
+            ]
+
+            for filename in files:
+                file_path = root / filename
+
+                if ignore.should_ignore(file_path, self._base_path):
+                    continue
+
+                relative_path = str(file_path.relative_to(self._base_path))
+                # Normalize path separators
+                relative_path = relative_path.replace("\\", "/")
+
+                local_file = self._state.get_file(relative_path)
+                stat = file_path.stat()
+
+                if local_file is None:
+                    # New file - add to state
+                    logger.debug(f"Found new local file: {relative_path}")
+                    self._state.add_file(
+                        relative_path,
+                        local_mtime=stat.st_mtime,
+                        local_size=stat.st_size,
+                        local_hash="",  # Will be computed on upload
+                        status=FileStatus.NEW,
+                    )
+                elif local_file.status == FileStatus.SYNCED:
+                    # Check if modified since last sync
+                    local_mtime = local_file.local_mtime or 0.0
+                    if (
+                        stat.st_mtime > local_mtime
+                        or stat.st_size != local_file.local_size
+                    ):
+                        logger.debug(f"Found modified local file: {relative_path}")
+                        self._state.mark_modified(relative_path)
 
     def _push_changes(self) -> dict[str, list[str]]:
         """Push local changes to server.
