@@ -126,6 +126,8 @@ def create_app(db: Database, storage: ChunkStorage | None = None) -> FastAPI:
     Returns:
         Configured FastAPI application.
     """
+    from syncagent.server.web import router as web_router
+
     app = FastAPI(
         title="SyncAgent Server",
         description="Zero-Knowledge E2EE File Sync Server",
@@ -135,6 +137,9 @@ def create_app(db: Database, storage: ChunkStorage | None = None) -> FastAPI:
     # Store database and storage in app state for access in dependencies
     app.state.db = db
     app.state.storage = storage
+
+    # Include Web UI routes
+    app.include_router(web_router)
 
     def get_db(request: Request) -> Database:
         """Get database from request state."""
