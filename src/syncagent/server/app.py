@@ -10,6 +10,9 @@ Usage:
 
 from __future__ import annotations
 
+import logging
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -18,6 +21,8 @@ from syncagent.server.api.router import router as api_router
 from syncagent.server.database import Database
 from syncagent.server.storage import ChunkStorage, create_storage
 from syncagent.server.web import router as web_router
+
+logger = logging.getLogger(__name__)
 
 # Configuration - can be overridden via environment variables
 DB_PATH = Path("syncagent.db")
@@ -36,10 +41,32 @@ def create_app(db: Database, storage: ChunkStorage | None = None) -> FastAPI:
     Returns:
         Configured FastAPI application.
     """
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+        """Application lifespan handler for startup/shutdown."""
+        # Startup
+        db_path = getattr(db, "_db_path", "in-memory")
+        print(f"\n{'='*60}")
+        print("SyncAgent Server Starting")
+        print(f"{'='*60}")
+        print(f"  Database: {db_path}")
+        if storage:
+            print(f"  Storage:  {storage.location}")
+        else:
+            print("  Storage:  None (storage disabled)")
+        print(f"{'='*60}\n")
+
+        yield
+
+        # Shutdown
+        logger.info("SyncAgent Server shutting down")
+
     application = FastAPI(
         title="SyncAgent Server",
         description="Zero-Knowledge E2EE File Sync Server",
         version="0.1.0",
+        lifespan=lifespan,
     )
 
     application.state.db = db
@@ -49,6 +76,14 @@ def create_app(db: Database, storage: ChunkStorage | None = None) -> FastAPI:
     application.include_router(web_router)
 
     return application
+
+
+def app_factory() -> FastAPI:
+    """Factory function for uvicorn --factory mode."""
+    return create_app(
+        db=Database(DB_PATH),
+        storage=create_storage(STORAGE_CONFIG),
+    )
 
 
 # Default application instance for uvicorn

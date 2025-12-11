@@ -23,6 +23,11 @@ class ChunkNotFoundError(Exception):
 class ChunkStorage(ABC):
     """Abstract interface for encrypted chunk storage."""
 
+    @property
+    @abstractmethod
+    def location(self) -> str:
+        """Return a human-readable description of where chunks are stored."""
+
     @abstractmethod
     def put(self, chunk_hash: str, data: bytes) -> None:
         """Store an encrypted chunk.
@@ -82,8 +87,13 @@ class LocalFSStorage(ChunkStorage):
         Args:
             base_path: Base directory for chunk storage.
         """
-        self._base_path = Path(base_path)
+        self._base_path = Path(base_path).resolve()
         self._base_path.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def location(self) -> str:
+        """Return the local storage path."""
+        return f"Local filesystem: {self._base_path}"
 
     def _chunk_path(self, chunk_hash: str) -> Path:
         """Get the file path for a chunk.
@@ -142,6 +152,7 @@ class S3Storage(ChunkStorage):
         import boto3
 
         self._bucket = bucket
+        self._endpoint_url = endpoint_url
         self._client: Any = boto3.client(
             "s3",
             endpoint_url=endpoint_url,
@@ -149,6 +160,13 @@ class S3Storage(ChunkStorage):
             aws_secret_access_key=secret_key,
             region_name=region,
         )
+
+    @property
+    def location(self) -> str:
+        """Return the S3 bucket location."""
+        if self._endpoint_url:
+            return f"S3: {self._endpoint_url}/{self._bucket}"
+        return f"S3: s3://{self._bucket}"
 
     def _key(self, chunk_hash: str) -> str:
         """Get the S3 key for a chunk."""
