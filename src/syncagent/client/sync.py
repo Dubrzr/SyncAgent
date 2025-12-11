@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -35,6 +36,29 @@ class UploadError(SyncError):
 
 class DownloadError(SyncError):
     """Failed to download a file."""
+
+
+@dataclass
+class SyncProgress:
+    """Progress information for sync operations."""
+
+    file_path: str
+    file_size: int
+    current_chunk: int
+    total_chunks: int
+    bytes_transferred: int
+    operation: str  # "upload" or "download"
+
+    @property
+    def percent(self) -> float:
+        """Get progress percentage."""
+        if self.total_chunks == 0:
+            return 100.0
+        return (self.current_chunk / self.total_chunks) * 100
+
+
+# Type alias for progress callback
+ProgressCallback = Callable[[SyncProgress], None]
 
 
 @dataclass
@@ -66,15 +90,18 @@ class FileUploader:
         self,
         client: SyncClient,
         encryption_key: bytes,
+        progress_callback: ProgressCallback | None = None,
     ) -> None:
         """Initialize the uploader.
 
         Args:
             client: HTTP client for server communication.
             encryption_key: 32-byte AES key for encryption.
+            progress_callback: Optional callback for progress updates.
         """
         self._client = client
         self._key = encryption_key
+        self._progress_callback = progress_callback
 
     def upload_file(
         self,
@@ -110,8 +137,21 @@ class FileUploader:
         size = local_path.stat().st_size
 
         # Upload chunks that don't exist on server
-        for chunk in chunks:
+        bytes_transferred = 0
+        for i, chunk in enumerate(chunks):
             self._upload_chunk_if_needed(chunk)
+            bytes_transferred += len(chunk.data)
+
+            # Report progress
+            if self._progress_callback:
+                self._progress_callback(SyncProgress(
+                    file_path=relative_path,
+                    file_size=size,
+                    current_chunk=i + 1,
+                    total_chunks=len(chunks),
+                    bytes_transferred=bytes_transferred,
+                    operation="upload",
+                ))
 
         # Create or update file metadata
         if parent_version is None:
@@ -172,15 +212,18 @@ class FileDownloader:
         self,
         client: SyncClient,
         encryption_key: bytes,
+        progress_callback: ProgressCallback | None = None,
     ) -> None:
         """Initialize the downloader.
 
         Args:
             client: HTTP client for server communication.
             encryption_key: 32-byte AES key for decryption.
+            progress_callback: Optional callback for progress updates.
         """
         self._client = client
         self._key = encryption_key
+        self._progress_callback = progress_callback
 
     def download_file(
         self,
@@ -208,16 +251,29 @@ class FileDownloader:
         local_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Download and assemble chunks
+        bytes_transferred = 0
         with open(local_path, "wb") as f:
             for i, chunk_hash in enumerate(chunk_hashes):
                 try:
                     encrypted = self._client.download_chunk(chunk_hash)
                     decrypted = decrypt_chunk(encrypted, self._key)
                     f.write(decrypted)
+                    bytes_transferred += len(decrypted)
                     logger.debug(
                         f"Downloaded chunk {i + 1}/{len(chunk_hashes)}: "
                         f"{chunk_hash[:8]}..."
                     )
+
+                    # Report progress
+                    if self._progress_callback:
+                        self._progress_callback(SyncProgress(
+                            file_path=server_file.path,
+                            file_size=server_file.size,
+                            current_chunk=i + 1,
+                            total_chunks=len(chunk_hashes),
+                            bytes_transferred=bytes_transferred,
+                            operation="download",
+                        ))
                 except NotFoundError as e:
                     raise DownloadError(
                         f"Chunk {chunk_hash} not found for {server_file.path}"
@@ -259,6 +315,7 @@ class SyncEngine:
         state: SyncState,
         base_path: Path,
         encryption_key: bytes,
+        progress_callback: ProgressCallback | None = None,
     ) -> None:
         """Initialize the sync engine.
 
@@ -267,13 +324,15 @@ class SyncEngine:
             state: Local state database.
             base_path: Base directory for synced files.
             encryption_key: 32-byte AES key for encryption.
+            progress_callback: Optional callback for progress updates.
         """
         self._client = client
         self._state = state
         self._base_path = Path(base_path).resolve()
         self._key = encryption_key
-        self._uploader = FileUploader(client, encryption_key)
-        self._downloader = FileDownloader(client, encryption_key)
+        self._progress_callback = progress_callback
+        self._uploader = FileUploader(client, encryption_key, progress_callback)
+        self._downloader = FileDownloader(client, encryption_key, progress_callback)
 
     def sync(self) -> SyncResult:
         """Perform a full sync operation.

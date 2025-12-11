@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import click
+
+if TYPE_CHECKING:
+    from syncagent.client.sync import SyncProgress
 
 from syncagent.client.keystore import (
     KeyStoreError,
@@ -478,9 +482,58 @@ def format_size(size_bytes: int) -> str:
     return f"{size:.1f} TB"
 
 
+class SyncProgressBar:
+    """Progress bar manager for sync operations."""
+
+    def __init__(self) -> None:
+        self._current_file: str | None = None
+        self._current_operation: str | None = None
+        self._bar: Any = None
+
+    def update(self, progress: SyncProgress) -> None:
+        """Update progress display."""
+        # Check if we're on a new file
+        if self._current_file != progress.file_path or self._current_operation != progress.operation:
+            # Close previous progress bar
+            if self._bar is not None:
+                self._bar.__exit__(None, None, None)
+
+            self._current_file = progress.file_path
+            self._current_operation = progress.operation
+
+            # Display file header
+            arrow = "↑" if progress.operation == "upload" else "↓"
+            size_str = format_size(progress.file_size)
+            click.echo(f"  {arrow} {progress.file_path} ({size_str})")
+
+            # Create new progress bar
+            self._bar = click.progressbar(
+                length=progress.total_chunks,
+                label="    ",
+                show_eta=True,
+                show_percent=True,
+                width=40,
+            )
+            self._bar.__enter__()
+
+        # Update progress bar
+        if self._bar is not None:
+            # Update to current chunk position
+            self._bar.update(1)
+
+    def close(self) -> None:
+        """Close any open progress bar."""
+        if self._bar is not None:
+            self._bar.__exit__(None, None, None)
+            self._bar = None
+            self._current_file = None
+            self._current_operation = None
+
+
 @cli.command()
 @click.option("--watch", "-w", is_flag=True, help="Watch for changes and sync continuously.")
-def sync(watch: bool) -> None:
+@click.option("--no-progress", is_flag=True, help="Disable progress bars.")
+def sync(watch: bool, no_progress: bool) -> None:
     """Synchronize files with the server.
 
     Uploads local changes and downloads remote changes.
@@ -522,10 +575,21 @@ def sync(watch: bool) -> None:
     server_url = config["server_url"]
     auth_token = config["auth_token"]
 
+    # Set up progress callback
+    progress_bar = SyncProgressBar() if not no_progress else None
+
+    def on_progress(progress: SyncProgress) -> None:
+        """Handle progress updates."""
+        if progress_bar:
+            progress_bar.update(progress)
+
     client = SyncClient(server_url, auth_token)
     state_db = config_dir / "state.db"
     state = SyncState(state_db)
-    engine = SyncEngine(client, state, sync_folder, keystore.encryption_key)
+    engine = SyncEngine(
+        client, state, sync_folder, keystore.encryption_key,
+        progress_callback=on_progress if not no_progress else None
+    )
 
     click.echo(f"Syncing with {server_url}...")
     click.echo(f"Sync folder: {sync_folder}\n")
@@ -535,24 +599,18 @@ def sync(watch: bool) -> None:
         try:
             result = engine.sync()
 
-            # Display results
-            if result.uploaded:
-                click.echo("Uploaded:")
-                for path in result.uploaded:
-                    click.echo(f"  ↑ {path}")
+            # Close progress bar after sync
+            if progress_bar:
+                progress_bar.close()
 
-            if result.downloaded:
-                click.echo("Downloaded:")
-                for path in result.downloaded:
-                    click.echo(f"  ↓ {path}")
-
+            # Display results summary
             if result.conflicts:
-                click.echo(click.style("Conflicts:", fg="yellow"))
+                click.echo(click.style("\nConflicts:", fg="yellow"))
                 for path in result.conflicts:
                     click.echo(f"  ! {path}")
 
             if result.errors:
-                click.echo(click.style("Errors:", fg="red"))
+                click.echo(click.style("\nErrors:", fg="red"))
                 for error in result.errors:
                     click.echo(f"  ✗ {error}")
 
@@ -568,6 +626,8 @@ def sync(watch: bool) -> None:
                 )
 
         except Exception as e:
+            if progress_bar:
+                progress_bar.close()
             click.echo(f"Sync error: {e}", err=True)
 
     if watch:
