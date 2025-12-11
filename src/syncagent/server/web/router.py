@@ -19,7 +19,7 @@ from fastapi import APIRouter, Cookie, Depends, Form, HTTPException, Request, Re
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from .database import Database
+from syncagent.server.database import Database
 
 # Password hasher
 ph = argon2.PasswordHasher()
