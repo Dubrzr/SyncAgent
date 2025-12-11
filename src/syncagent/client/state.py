@@ -323,7 +323,7 @@ class SyncState:
 
     def remove_file(self, path: str) -> None:
         """Remove a file from the state database."""
-        self._conn.execute("DELETE FROM files WHERE path = ?", (path,))
+        self._conn.execute("DELETE FROM local_files WHERE path = ?", (path,))
         self._conn.commit()
 
     # === Pending uploads ===
