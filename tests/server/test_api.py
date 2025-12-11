@@ -60,11 +60,18 @@ class TestHealthEndpoint:
 class TestMachineEndpoints:
     """Tests for machine management endpoints."""
 
-    def test_register_machine(self, client: TestClient) -> None:
+    def test_register_machine(self, client: TestClient, db: Database) -> None:
         """Should register a new machine and return token."""
+        # Create an invitation first
+        raw_invitation, _ = db.create_invitation()
+
         response = client.post(
             "/api/machines/register",
-            json={"name": "my-laptop", "platform": "Windows"},
+            json={
+                "name": "my-laptop",
+                "platform": "Windows",
+                "invitation_token": raw_invitation,
+            },
         )
         assert response.status_code == 201
         data = response.json()
@@ -72,17 +79,40 @@ class TestMachineEndpoints:
         assert data["token"].startswith("sa_")
         assert data["machine"]["name"] == "my-laptop"
 
-    def test_register_duplicate_name_fails(self, client: TestClient) -> None:
+    def test_register_duplicate_name_fails(self, client: TestClient, db: Database) -> None:
         """Registering with duplicate name should fail."""
+        raw_invitation1, _ = db.create_invitation()
+        raw_invitation2, _ = db.create_invitation()
+
         client.post(
             "/api/machines/register",
-            json={"name": "same-name", "platform": "Linux"},
+            json={
+                "name": "same-name",
+                "platform": "Linux",
+                "invitation_token": raw_invitation1,
+            },
         )
         response = client.post(
             "/api/machines/register",
-            json={"name": "same-name", "platform": "macOS"},
+            json={
+                "name": "same-name",
+                "platform": "macOS",
+                "invitation_token": raw_invitation2,
+            },
         )
         assert response.status_code == 409
+
+    def test_register_invalid_invitation_fails(self, client: TestClient) -> None:
+        """Registering with invalid invitation should fail."""
+        response = client.post(
+            "/api/machines/register",
+            json={
+                "name": "my-laptop",
+                "platform": "Windows",
+                "invitation_token": "invalid-token",
+            },
+        )
+        assert response.status_code == 401
 
     def test_list_machines_requires_auth(self, client: TestClient) -> None:
         """Listing machines requires authentication."""

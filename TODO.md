@@ -23,6 +23,11 @@
 | 6 | Web UI | Done |
 | 7 | Protocol Handler | Done |
 | 8 | Tray Icon | Done |
+| 9 | Manual Testing & UX Fixes | Done |
+| 10 | Conflict Management | Pending |
+| 11 | Trash Auto-Purge | Pending |
+| 12 | Resume Sync | Pending |
+| 13 | Integration Tests | Pending |
 
 ---
 
@@ -144,6 +149,85 @@
 
 ---
 
+## Phase 9: Manual tests by Julien and their resolution [DONE]
+
+- [x] Mobile navigation hamburger menu added for responsive Web UI
+- [x] "Enter master password" → "Create master password" for first-time init
+- [x] "Running in pure python mode (slow)" documented in README Troubleshooting section
+- [x] After init: shows next steps guidance (server setup, register, sync commands)
+- [x] Sync folder created automatically at ~/SyncAgent (configurable via --sync-folder)
+
+---
+
+
+## Phase 10: Conflict Management
+
+**Objectif:** Permettre aux utilisateurs de gérer les conflits de synchronisation
+
+- [ ] Créer copie locale lors d'un conflit: `fichier (conflit - machine - timestamp).ext`
+- [ ] Stocker métadonnées du conflit (machine source, timestamp, versions)
+- [ ] API: `GET /api/conflicts` - lister les fichiers en conflit
+- [ ] API: `POST /api/conflicts/{path}/resolve` - résoudre (keep_local, keep_server, keep_both)
+- [ ] Web UI: Page `/conflicts` avec liste des conflits et comparaison versions
+- [ ] CLI: `syncagent conflicts` (liste) et `syncagent resolve <path>` (résolution interactive)
+- [ ] Tests unitaires (95%+ coverage)
+- [ ] Mypy strict + Ruff zero warnings
+
+**Fichiers:** `src/syncagent/client/sync.py`, `src/syncagent/server/api/conflicts.py`, `src/syncagent/server/web/templates/conflicts.html`
+
+---
+
+## Phase 11: Trash Auto-Purge & Configuration
+
+**Objectif:** Automatiser le nettoyage de la corbeille avec configuration
+
+- [ ] Variable d'environnement `SYNCAGENT_TRASH_RETENTION_DAYS` (défaut: 30)
+- [ ] Fix: Suppression explicite des chunks dans `purge_trash()` (bug actuel)
+- [ ] Scheduler APScheduler pour purge automatique (quotidienne à 3h)
+- [ ] CLI: `syncagent server purge-trash [--older-than-days N]` pour cron/manuel
+- [ ] API Admin: `POST /api/admin/purge-trash`
+- [ ] Suppression chunks du storage S3/local lors de la purge
+- [ ] Tests unitaires (95%+ coverage)
+- [ ] Mypy strict + Ruff zero warnings
+
+**Fichiers:** `src/syncagent/server/app.py`, `src/syncagent/server/scheduler.py`, `src/syncagent/server/database.py`, `src/syncagent/server/storage.py`
+
+---
+
+## Phase 12: Resume Sync & Robustesse
+
+**Objectif:** Permettre la reprise des transferts interrompus au niveau chunk
+
+- [ ] Table `upload_progress` (file_path, chunk_index, chunk_hash, uploaded_at)
+- [ ] Écriture atomique downloads: `fichier.tmp` → rename après validation
+- [ ] Tracking progression upload par chunk (pas seulement par fichier)
+- [ ] Retry avec backoff exponentiel (1s, 2s, 4s, 8s, max 60s)
+- [ ] Config `max_retry_attempts` (défaut: 5) avant marquage échec
+- [ ] Validation checksum partiel avant resume download
+- [ ] Tests unitaires (95%+ coverage)
+- [ ] Mypy strict + Ruff zero warnings
+
+**Fichiers:** `src/syncagent/client/sync.py`, `src/syncagent/client/state.py`, `src/syncagent/client/api.py`
+
+---
+
+## Phase 13: Integration Tests
+
+**Objectif:** Valider le workflow complet client ↔ serveur end-to-end
+
+- [ ] Fixture pytest: Serveur de test avec DB in-memory + storage local temp
+- [ ] Test: `init` → `register` → upload fichier → download sur autre client
+- [ ] Test: Modification simultanée sur 2 clients → détection conflit
+- [ ] Test: Suppression fichier → corbeille → restauration → re-sync
+- [ ] Test: Interruption réseau simulée → resume sync
+- [ ] Test: Gros fichier (100MB+) chunked upload/download
+- [ ] CI: Job GitHub Actions séparé pour tests d'intégration
+- [ ] Coverage minimum 90% sur scénarios e2e
+
+**Fichiers:** `tests/integration/conftest.py`, `tests/integration/test_sync_e2e.py`, `tests/integration/test_conflict_e2e.py`, `.github/workflows/integration.yml`
+
+---
+
 ## Requirements Fonctionnels
 
 ### Synchronisation
@@ -171,8 +255,8 @@
 - [ ] Suppression chunks à purge corbeille
 
 ### Corbeille
-- [ ] Rétention 30 jours (configurable)
-- [ ] Restauration via Web UI
+- [~] Rétention 30 jours (configurable) - *30j hardcodé, pas encore configurable*
+- [x] Restauration via Web UI
 - [ ] Purge automatique
 
 ### Authentification
@@ -192,3 +276,4 @@
 - [x] Conventional Commits
 - [x] Docstrings fonctions publiques
 - [ ] Tests d'intégration client ↔ serveur
+

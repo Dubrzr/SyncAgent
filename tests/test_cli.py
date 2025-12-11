@@ -28,15 +28,18 @@ class TestInitCommand:
 
     def test_init_creates_keystore(self, runner: CliRunner, tmp_path: Path) -> None:
         """Init should create a keystore with keyfile.json."""
+        sync_folder = tmp_path / "SyncAgent"
         with patch("syncagent.client.cli.get_config_dir", return_value=tmp_path):
-            result = runner.invoke(cli, ["init"], input="test_password\ntest_password\n")
+            # Input: password, confirm password, sync folder (accept default with empty)
+            result = runner.invoke(cli, ["init"], input=f"test_password\ntest_password\n{sync_folder}\n")
         assert result.exit_code == 0
         assert (tmp_path / "keyfile.json").exists()
 
     def test_init_prompts_for_password(self, runner: CliRunner, tmp_path: Path) -> None:
         """Init should prompt for password confirmation."""
+        sync_folder = tmp_path / "SyncAgent"
         with patch("syncagent.client.cli.get_config_dir", return_value=tmp_path):
-            result = runner.invoke(cli, ["init"], input="password\npassword\n")
+            result = runner.invoke(cli, ["init"], input=f"password\npassword\n{sync_folder}\n")
         assert result.exit_code == 0
         assert "password" in result.output.lower() or "mot de passe" in result.output.lower()
 
@@ -53,18 +56,20 @@ class TestInitCommand:
         self, runner: CliRunner, tmp_path: Path
     ) -> None:
         """Init should fail if keystore already exists."""
+        sync_folder = tmp_path / "SyncAgent"
         with patch("syncagent.client.cli.get_config_dir", return_value=tmp_path):
             # First init
-            runner.invoke(cli, ["init"], input="password\npassword\n")
-            # Second init should fail
+            runner.invoke(cli, ["init"], input=f"password\npassword\n{sync_folder}\n")
+            # Second init should fail (no more prompts after error)
             result = runner.invoke(cli, ["init"], input="password\npassword\n")
         assert result.exit_code != 0
         assert "already" in result.output.lower() or "existe" in result.output.lower()
 
     def test_init_shows_key_id(self, runner: CliRunner, tmp_path: Path) -> None:
         """Init should display the key ID."""
+        sync_folder = tmp_path / "SyncAgent"
         with patch("syncagent.client.cli.get_config_dir", return_value=tmp_path):
-            result = runner.invoke(cli, ["init"], input="password\npassword\n")
+            result = runner.invoke(cli, ["init"], input=f"password\npassword\n{sync_folder}\n")
         # Key ID is a UUID
         assert result.exit_code == 0
         # Check output contains something that looks like a UUID
@@ -82,7 +87,8 @@ class TestUnlockCommand:
     ) -> None:
         """Unlock should succeed with correct password."""
         with patch("syncagent.client.cli.get_config_dir", return_value=tmp_path):
-            runner.invoke(cli, ["init"], input="correct_password\ncorrect_password\n")
+            # password + confirm + sync folder (accept default)
+            runner.invoke(cli, ["init"], input="correct_password\ncorrect_password\n\n")
             result = runner.invoke(cli, ["unlock"], input="correct_password\n")
         assert result.exit_code == 0
 
@@ -91,7 +97,7 @@ class TestUnlockCommand:
     ) -> None:
         """Unlock should fail with wrong password."""
         with patch("syncagent.client.cli.get_config_dir", return_value=tmp_path):
-            runner.invoke(cli, ["init"], input="correct_password\ncorrect_password\n")
+            runner.invoke(cli, ["init"], input="correct_password\ncorrect_password\n\n")
             result = runner.invoke(cli, ["unlock"], input="wrong_password\n")
         assert result.exit_code != 0
 
@@ -110,7 +116,7 @@ class TestExportKeyCommand:
     ) -> None:
         """Export-key should output base64-encoded key."""
         with patch("syncagent.client.cli.get_config_dir", return_value=tmp_path):
-            runner.invoke(cli, ["init"], input="password\npassword\n")
+            runner.invoke(cli, ["init"], input="password\npassword\n\n")
             result = runner.invoke(cli, ["export-key"], input="password\n")
         assert result.exit_code == 0
         # Should contain base64 (44 chars for 32 bytes)
@@ -129,7 +135,7 @@ class TestExportKeyCommand:
     ) -> None:
         """Export-key should require password."""
         with patch("syncagent.client.cli.get_config_dir", return_value=tmp_path):
-            runner.invoke(cli, ["init"], input="password\npassword\n")
+            runner.invoke(cli, ["init"], input="password\npassword\n\n")
             result = runner.invoke(cli, ["export-key"], input="wrong_password\n")
         assert result.exit_code != 0
 
@@ -147,7 +153,7 @@ class TestImportKeyCommand:
         new_key = base64.b64encode(os.urandom(32)).decode()
 
         with patch("syncagent.client.cli.get_config_dir", return_value=tmp_path):
-            runner.invoke(cli, ["init"], input="password\npassword\n")
+            runner.invoke(cli, ["init"], input="password\npassword\n\n")
             result = runner.invoke(
                 cli, ["import-key", new_key], input="password\n"
             )
@@ -158,7 +164,7 @@ class TestImportKeyCommand:
     ) -> None:
         """Import-key should fail with invalid key format."""
         with patch("syncagent.client.cli.get_config_dir", return_value=tmp_path):
-            runner.invoke(cli, ["init"], input="password\npassword\n")
+            runner.invoke(cli, ["init"], input="password\npassword\n\n")
             result = runner.invoke(
                 cli, ["import-key", "not-valid-base64!!!"], input="password\n"
             )
@@ -173,7 +179,7 @@ class TestImportKeyCommand:
         short_key = base64.b64encode(b"short").decode()
 
         with patch("syncagent.client.cli.get_config_dir", return_value=tmp_path):
-            runner.invoke(cli, ["init"], input="password\npassword\n")
+            runner.invoke(cli, ["init"], input="password\npassword\n\n")
             result = runner.invoke(
                 cli, ["import-key", short_key], input="password\n"
             )
@@ -184,7 +190,7 @@ class TestImportKeyCommand:
     ) -> None:
         """Exported key from one keystore should import into another."""
         with patch("syncagent.client.cli.get_config_dir", return_value=tmp_path / "ks1"):
-            runner.invoke(cli, ["init"], input="password1\npassword1\n")
+            runner.invoke(cli, ["init"], input="password1\npassword1\n\n")
             export_result = runner.invoke(cli, ["export-key"], input="password1\n")
 
         # Extract the key from output
@@ -192,7 +198,7 @@ class TestImportKeyCommand:
         key_line = [line for line in lines if len(line) == 44 and "=" in line][0]
 
         with patch("syncagent.client.cli.get_config_dir", return_value=tmp_path / "ks2"):
-            runner.invoke(cli, ["init"], input="password2\npassword2\n")
+            runner.invoke(cli, ["init"], input="password2\npassword2\n\n")
             result = runner.invoke(
                 cli, ["import-key", key_line], input="password2\n"
             )

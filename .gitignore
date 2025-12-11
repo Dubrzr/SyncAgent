@@ -48,3 +48,13 @@ Thumbs.db
 # Project specific
 .syncagent/
 *.key
+
+# DB
+
+*.db
+*.db-shm
+*.db-wal
+
+# AI
+
+.claude

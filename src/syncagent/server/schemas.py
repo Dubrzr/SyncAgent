@@ -14,6 +14,7 @@ class MachineRegisterRequest(BaseModel):
 
     name: str
     platform: str
+    invitation_token: str
 
 
 class MachineResponse(BaseModel):

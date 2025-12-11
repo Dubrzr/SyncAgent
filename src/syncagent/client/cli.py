@@ -54,7 +54,7 @@ def init() -> None:
     """Initialize a new SyncAgent keystore.
 
     Creates a new encryption key and stores it securely.
-    You will be prompted to set a master password.
+    You will be prompted to create a master password and choose a sync folder.
     """
     config_dir = get_config_dir()
 
@@ -62,20 +62,61 @@ def init() -> None:
     if (config_dir / "keyfile.json").exists():
         click.echo("Error: SyncAgent already initialized.", err=True)
         click.echo(f"Keystore exists at: {config_dir / 'keyfile.json'}", err=True)
+        click.echo("\nTo start over, delete the config directory:")
+        click.echo(f"  rm -rf {config_dir}")
         sys.exit(1)
 
+    click.echo("Welcome to SyncAgent!")
+    click.echo("This wizard will help you set up secure file synchronization.\n")
+
     # Prompt for password with confirmation
+    click.echo("First, create a master password to protect your encryption key.")
+    click.echo("Choose a strong password - you'll need it to unlock SyncAgent.\n")
+
     password = click.prompt(
-        "Enter master password",
+        "Create master password",
         hide_input=True,
         confirmation_prompt="Confirm master password",
     )
 
+    # Prompt for sync folder
+    default_sync_folder = Path.home() / "SyncAgent"
+    click.echo("\nWhere do you want to sync files?")
+    sync_folder_input = click.prompt(
+        "Sync folder",
+        default=str(default_sync_folder),
+        show_default=True,
+    )
+    sync_path = Path(sync_folder_input).expanduser().resolve()
+
     try:
         keystore = create_keystore(password, config_dir)
-        click.echo("SyncAgent initialized successfully!")
+
+        # Create sync folder if it doesn't exist
+        if not sync_path.exists():
+            sync_path.mkdir(parents=True)
+            click.echo(f"\nCreated sync folder: {sync_path}")
+
+        click.echo("\nSyncAgent initialized successfully!")
         click.echo(f"Key ID: {keystore.key_id}")
         click.echo(f"Config directory: {config_dir}")
+        click.echo(f"Sync folder: {sync_path}")
+
+        # Next steps guidance
+        click.echo("\n" + "=" * 50)
+        click.echo("NEXT STEPS:")
+        click.echo("=" * 50)
+        click.echo("\n1. Start the server (if not already running):")
+        click.echo("   uvicorn syncagent.server.app:app --host 0.0.0.0 --port 8000")
+        click.echo("\n2. Open http://localhost:8000 and create an admin account")
+        click.echo("\n3. Go to 'Invitations' and create a token for this machine")
+        click.echo("\n4. Register this machine with the server:")
+        click.echo("   syncagent register --server http://localhost:8000 --token <invitation-token>")
+        click.echo("\n5. Start syncing:")
+        click.echo("   syncagent sync")
+        click.echo("\nOr run with system tray icon (requires pystray):")
+        click.echo("   syncagent tray")
+
     except KeyStoreError as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
@@ -168,6 +209,128 @@ def get_sync_folder() -> Path:
     """
     # TODO: Read from config file in get_config_dir()
     return Path.home() / "SyncAgent"
+
+
+def get_config_file() -> Path:
+    """Get the path to the config file."""
+    return get_config_dir() / "config.json"
+
+
+def load_config() -> dict[str, str]:
+    """Load configuration from config file."""
+    import json
+
+    config_file = get_config_file()
+    if config_file.exists():
+        return dict(json.loads(config_file.read_text()))
+    return {}
+
+
+def save_config(config: dict[str, str]) -> None:
+    """Save configuration to config file."""
+    import json
+
+    config_file = get_config_file()
+    config_file.parent.mkdir(parents=True, exist_ok=True)
+    config_file.write_text(json.dumps(config, indent=2))
+
+
+@cli.command()
+@click.option(
+    "--server",
+    required=True,
+    help="Server URL (e.g., http://localhost:8000).",
+)
+@click.option(
+    "--token",
+    required=True,
+    help="Invitation token from the server admin.",
+)
+@click.option(
+    "--name",
+    default=None,
+    help="Machine name (default: hostname).",
+)
+def register(server: str, token: str, name: str | None) -> None:
+    """Register this machine with a SyncAgent server.
+
+    Requires an invitation token from the server admin.
+    Creates a connection between this machine and the server.
+    """
+    import platform
+    import socket
+
+    import httpx
+
+    config_dir = get_config_dir()
+
+    # Check if initialized
+    if not (config_dir / "keyfile.json").exists():
+        click.echo("Error: SyncAgent not initialized. Run 'syncagent init' first.", err=True)
+        sys.exit(1)
+
+    # Check if already registered
+    config = load_config()
+    if config.get("server_url") and config.get("auth_token"):
+        click.echo("Warning: This machine is already registered.", err=True)
+        if not click.confirm("Do you want to re-register with a new server?"):
+            sys.exit(0)
+
+    # Determine machine name
+    machine_name = name or socket.gethostname()
+    machine_platform = platform.system().lower()
+
+    click.echo(f"Registering machine '{machine_name}' with server...")
+
+    # Call the registration API
+    try:
+        response = httpx.post(
+            f"{server.rstrip('/')}/api/machines/register",
+            json={
+                "name": machine_name,
+                "platform": machine_platform,
+                "invitation_token": token,
+            },
+            timeout=30.0,
+        )
+
+        if response.status_code == 401:
+            click.echo("Error: Invalid or expired invitation token.", err=True)
+            sys.exit(1)
+        elif response.status_code == 409:
+            click.echo(f"Error: Machine name '{machine_name}' already exists on server.", err=True)
+            click.echo("Use --name to specify a different name.")
+            sys.exit(1)
+        elif response.status_code != 201:
+            detail = response.json().get("detail", "Unknown error")
+            click.echo(f"Error: {detail}", err=True)
+            sys.exit(1)
+
+        data = response.json()
+        auth_token = data["token"]
+        machine_info = data["machine"]
+
+        # Save configuration
+        config["server_url"] = server.rstrip("/")
+        config["auth_token"] = auth_token
+        config["machine_id"] = str(machine_info["id"])
+        config["machine_name"] = machine_info["name"]
+        save_config(config)
+
+        click.echo("\nMachine registered successfully!")
+        click.echo(f"Server: {server}")
+        click.echo(f"Machine ID: {machine_info['id']}")
+        click.echo(f"Machine name: {machine_info['name']}")
+        click.echo("\nYou can now start syncing with:")
+        click.echo("  syncagent sync")
+
+    except httpx.ConnectError:
+        click.echo(f"Error: Could not connect to server at {server}", err=True)
+        click.echo("Make sure the server is running and accessible.")
+        sys.exit(1)
+    except httpx.RequestError as e:
+        click.echo(f"Error: Request failed: {e}", err=True)
+        sys.exit(1)
 
 
 @cli.command("register-protocol")

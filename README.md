@@ -186,6 +186,34 @@ The web UI provides:
 
 Access the dashboard at `http://localhost:8000` after starting the server.
 
+## Troubleshooting
+
+### "Running in pure python mode (slow)"
+
+If you see this warning when running `syncagent init`, it means the Argon2 C extension isn't available. Key derivation will still work but will be slower.
+
+**To fix this:**
+
+- **Windows**: Install [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/), then reinstall:
+  ```bash
+  pip uninstall argon2-cffi-bindings argon2-cffi
+  pip install argon2-cffi
+  ```
+
+- **macOS**: Install Xcode command line tools:
+  ```bash
+  xcode-select --install
+  pip uninstall argon2-cffi-bindings argon2-cffi
+  pip install argon2-cffi
+  ```
+
+- **Linux (Debian/Ubuntu)**:
+  ```bash
+  sudo apt install build-essential python3-dev
+  pip uninstall argon2-cffi-bindings argon2-cffi
+  pip install argon2-cffi
+  ```
+
 ## Security
 
 - **Encryption**: AES-256-GCM with unique nonce per chunk

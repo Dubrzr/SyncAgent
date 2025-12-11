@@ -26,7 +26,16 @@ def register_machine(
     request: MachineRegisterRequest,
     db: Database = Depends(get_db),
 ) -> MachineRegisterResponse:
-    """Register a new machine and get authentication token."""
+    """Register a new machine using an invitation token."""
+    # Validate invitation token
+    invitation = db.validate_invitation(request.invitation_token)
+    if not invitation:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired invitation token",
+        )
+
+    # Create machine
     try:
         machine = db.create_machine(request.name, request.platform)
     except Exception as e:
@@ -35,6 +44,10 @@ def register_machine(
             detail=f"Machine name '{request.name}' already exists",
         ) from e
 
+    # Mark invitation as used
+    db.use_invitation(request.invitation_token, machine.id)
+
+    # Create auth token for machine
     raw_token, _ = db.create_token(machine.id)
     return MachineRegisterResponse(
         token=raw_token,
