@@ -97,6 +97,11 @@ def init() -> None:
             sync_path.mkdir(parents=True)
             click.echo(f"\nCreated sync folder: {sync_path}")
 
+        # Save sync folder to config
+        config = load_config()
+        config["sync_folder"] = str(sync_path)
+        save_config(config)
+
         click.echo("\nSyncAgent initialized successfully!")
         click.echo(f"Key ID: {keystore.key_id}")
         click.echo(f"Config directory: {config_dir}")
@@ -250,7 +255,9 @@ def get_sync_folder() -> Path:
     Returns:
         Path to the sync folder (configured or default ~/SyncAgent).
     """
-    # TODO: Read from config file in get_config_dir()
+    config = load_config()
+    if config.get("sync_folder"):
+        return Path(config["sync_folder"]).expanduser().resolve()
     return Path.home() / "SyncAgent"
 
 
@@ -459,6 +466,141 @@ def protocol_status() -> None:
     else:
         click.echo("Protocol handler: NOT REGISTERED")
         click.echo("Run 'syncagent register-protocol' to enable syncfile:// links.")
+
+
+def format_size(size: int) -> str:
+    """Format file size in human-readable format."""
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size < 1024:
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} TB"
+
+
+@cli.command()
+@click.option("--watch", "-w", is_flag=True, help="Watch for changes and sync continuously.")
+def sync(watch: bool) -> None:
+    """Synchronize files with the server.
+
+    Uploads local changes and downloads remote changes.
+    Use --watch to continuously monitor for changes.
+    """
+    from syncagent.client.api import SyncClient
+    from syncagent.client.state import SyncState
+    from syncagent.client.sync import SyncEngine
+
+    config_dir = get_config_dir()
+
+    # Check if initialized
+    if not (config_dir / "keyfile.json").exists():
+        click.echo("Error: SyncAgent not initialized. Run 'syncagent init' first.", err=True)
+        sys.exit(1)
+
+    # Check if registered
+    config = load_config()
+    if not config.get("server_url") or not config.get("auth_token"):
+        click.echo("Error: Not registered with a server. Run 'syncagent register' first.", err=True)
+        sys.exit(1)
+
+    # Unlock keystore
+    password = click.prompt("Enter master password", hide_input=True)
+
+    try:
+        keystore = load_keystore(password, config_dir)
+    except KeyStoreError as e:
+        click.echo(f"Error: {e}", err=True)
+        sys.exit(1)
+
+    # Get sync folder
+    sync_folder = get_sync_folder()
+    if not sync_folder.exists():
+        sync_folder.mkdir(parents=True)
+        click.echo(f"Created sync folder: {sync_folder}")
+
+    # Initialize sync components
+    server_url = config["server_url"]
+    auth_token = config["auth_token"]
+
+    client = SyncClient(server_url, auth_token)
+    state_db = config_dir / "state.db"
+    state = SyncState(state_db)
+    engine = SyncEngine(client, state, sync_folder, keystore.encryption_key)
+
+    click.echo(f"Syncing with {server_url}...")
+    click.echo(f"Sync folder: {sync_folder}\n")
+
+    def run_sync() -> None:
+        """Run a single sync operation."""
+        try:
+            result = engine.sync()
+
+            # Display results
+            if result.uploaded:
+                click.echo("Uploaded:")
+                for path in result.uploaded:
+                    click.echo(f"  ↑ {path}")
+
+            if result.downloaded:
+                click.echo("Downloaded:")
+                for path in result.downloaded:
+                    click.echo(f"  ↓ {path}")
+
+            if result.conflicts:
+                click.echo(click.style("Conflicts:", fg="yellow"))
+                for path in result.conflicts:
+                    click.echo(f"  ! {path}")
+
+            if result.errors:
+                click.echo(click.style("Errors:", fg="red"))
+                for error in result.errors:
+                    click.echo(f"  ✗ {error}")
+
+            # Summary
+            total = len(result.uploaded) + len(result.downloaded)
+            if total == 0 and not result.conflicts and not result.errors:
+                click.echo("Everything is up to date.")
+            else:
+                click.echo(
+                    f"\nSync complete: {len(result.uploaded)} uploaded, "
+                    f"{len(result.downloaded)} downloaded, "
+                    f"{len(result.conflicts)} conflicts"
+                )
+
+        except Exception as e:
+            click.echo(f"Sync error: {e}", err=True)
+
+    if watch:
+        # Continuous sync with file watching
+        from syncagent.client.watcher import FileWatcher
+
+        click.echo("Watching for changes... (Ctrl+C to stop)\n")
+
+        # Initial sync
+        run_sync()
+
+        def on_changes(changes: list) -> None:
+            """Handle file changes."""
+            click.echo(f"\nDetected {len(changes)} change(s), syncing...")
+            # Mark changed files for upload
+            for change in changes:
+                if not change.is_directory:
+                    relative_path = str(Path(change.path).relative_to(sync_folder))
+                    state.add_pending_upload(relative_path)
+            run_sync()
+
+        watcher = FileWatcher(sync_folder, on_changes)
+        try:
+            watcher.start()
+            # Keep running until interrupted
+            import time
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            click.echo("\nStopping...")
+            watcher.stop()
+    else:
+        # Single sync
+        run_sync()
 
 
 @cli.command()
