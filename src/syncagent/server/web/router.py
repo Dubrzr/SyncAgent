@@ -350,8 +350,10 @@ async def delete_machine(
 ) -> RedirectResponse:
     """Delete a machine."""
     db = get_db(request)
-    db.delete_machine(machine_id)
-    return RedirectResponse(url="/machines", status_code=302)
+    deleted = db.delete_machine(machine_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Machine {machine_id} not found")
+    return RedirectResponse(url="/machines", status_code=303)
 
 
 # ---------------------------------------------------------------------------
