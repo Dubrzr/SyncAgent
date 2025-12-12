@@ -15,12 +15,9 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import click
-
-if TYPE_CHECKING:
-    from syncagent.client.sync import SyncProgress
 
 from syncagent.client.keystore import (
     KeyStoreError,
@@ -505,64 +502,6 @@ def protocol_status() -> None:
         click.echo("Run 'syncagent register-protocol' to enable syncfile:// links.")
 
 
-def format_size(size_bytes: int) -> str:
-    """Format file size in human-readable format."""
-    size = float(size_bytes)
-    for unit in ["B", "KB", "MB", "GB"]:
-        if size < 1024:
-            return f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} TB"
-
-
-class SyncProgressBar:
-    """Progress bar manager for sync operations."""
-
-    def __init__(self) -> None:
-        self._current_file: str | None = None
-        self._current_operation: str | None = None
-        self._bar: Any = None
-
-    def update(self, progress: SyncProgress) -> None:
-        """Update progress display."""
-        # Check if we're on a new file
-        if self._current_file != progress.file_path or self._current_operation != progress.operation:
-            # Close previous progress bar
-            if self._bar is not None:
-                self._bar.__exit__(None, None, None)
-
-            self._current_file = progress.file_path
-            self._current_operation = progress.operation
-
-            # Display file header
-            arrow = "↑" if progress.operation == "upload" else "↓"
-            size_str = format_size(progress.file_size)
-            click.echo(f"  {arrow} {progress.file_path} ({size_str})")
-
-            # Create new progress bar
-            self._bar = click.progressbar(
-                length=progress.total_chunks,
-                label="    ",
-                show_eta=True,
-                show_percent=True,
-                width=40,
-            )
-            self._bar.__enter__()
-
-        # Update progress bar
-        if self._bar is not None:
-            # Update to current chunk position
-            self._bar.update(1)
-
-    def close(self) -> None:
-        """Close any open progress bar."""
-        if self._bar is not None:
-            self._bar.__exit__(None, None, None)
-            self._bar = None
-            self._current_file = None
-            self._current_operation = None
-
-
 @cli.command()
 @click.option("--watch", "-w", is_flag=True, help="Watch for changes and sync continuously.")
 @click.option("--no-progress", is_flag=True, help="Disable progress bars.")
@@ -575,7 +514,14 @@ def sync(watch: bool, no_progress: bool) -> None:
     from syncagent.client.api import SyncClient
     from syncagent.client.notifications import notify_conflict
     from syncagent.client.state import SyncState
-    from syncagent.client.sync import ConflictInfo, SyncEngine
+    from syncagent.client.sync import (
+        ChangeScanner,
+        EventQueue,
+        SyncEventType,
+        TransferType,
+        WorkerPool,
+    )
+    from syncagent.core.config import ServerConfig
 
     config_dir = get_config_dir()
 
@@ -609,106 +555,164 @@ def sync(watch: bool, no_progress: bool) -> None:
     server_url = config["server_url"]
     auth_token = config["auth_token"]
 
-    # Set up progress callback
-    progress_bar = SyncProgressBar() if not no_progress else None
-
-    def on_progress(progress: SyncProgress) -> None:
-        """Handle progress updates."""
-        if progress_bar:
-            progress_bar.update(progress)
-
-    def on_conflict(conflict: ConflictInfo) -> None:
-        """Handle conflict notifications."""
-        # Display in CLI
-        click.echo(
-            click.style(f"\n⚠ Conflict: {conflict.original_path}", fg="yellow")
-        )
-        click.echo(f"  Local version saved as: {conflict.conflict_path}")
-
-        # Send system notification
-        filename = Path(conflict.original_path).name
-        notify_conflict(filename, conflict.machine_name)
-
-    client = SyncClient(server_url, auth_token)
+    server_config = ServerConfig(server_url=server_url, token=auth_token)
+    client = SyncClient(server_config)
     state_db = config_dir / "state.db"
     state = SyncState(state_db)
-    engine = SyncEngine(
-        client, state, sync_folder, keystore.encryption_key,
-        progress_callback=on_progress if not no_progress else None,
-        conflict_callback=on_conflict,
+
+    # Create event queue for sync events
+    queue = EventQueue()
+
+    # Create scanner to detect changes
+    scanner = ChangeScanner(client, state, sync_folder, queue)
+
+    # Create worker pool for concurrent transfers
+    pool = WorkerPool(
+        client=client,
+        encryption_key=keystore.encryption_key,
+        base_path=sync_folder,
+        state=state,
+        max_workers=4,
     )
+
+    # Track results
+    uploaded: list[str] = []
+    downloaded: list[str] = []
+    deleted: list[str] = []
+    conflicts: list[str] = []
+    errors: list[str] = []
+
+    def on_complete(result: Any) -> None:
+        """Track completed transfers."""
+        pass  # Stats tracked in result lists
+
+    def on_error(error_msg: str) -> None:
+        """Track errors."""
+        errors.append(error_msg)
 
     click.echo(f"Syncing with {server_url}...")
     click.echo(f"Sync folder: {sync_folder}\n")
 
     def run_sync() -> None:
         """Run a single sync operation."""
+        nonlocal uploaded, downloaded, deleted, conflicts, errors
+
+        # Reset counters
+        uploaded = []
+        downloaded = []
+        deleted = []
+        conflicts = []
+        errors = []
+
         try:
-            result = engine.sync()
+            # Scan for changes and push events to queue
+            scanner.scan()
 
-            # Close progress bar after sync
-            if progress_bar:
-                progress_bar.close()
+            # Process events from queue
+            pool.start()
 
-            # Display deleted files
-            if result.deleted:
-                for path in result.deleted:
-                    click.echo(f"  ✗ {path} (deleted)")
+            while True:
+                event = queue.get(timeout=0.1)
+                if event is None:
+                    # Queue is empty, check if pool is idle
+                    if pool.active_count == 0 and pool.queue_size == 0:
+                        break
+                    continue
+
+                # Determine transfer type
+                if event.event_type in (
+                    SyncEventType.LOCAL_CREATED,
+                    SyncEventType.LOCAL_MODIFIED,
+                ):
+                    transfer_type = TransferType.UPLOAD
+                    uploaded.append(event.path)
+                    arrow = "↑"
+                elif event.event_type in (
+                    SyncEventType.REMOTE_CREATED,
+                    SyncEventType.REMOTE_MODIFIED,
+                ):
+                    transfer_type = TransferType.DOWNLOAD
+                    downloaded.append(event.path)
+                    arrow = "↓"
+                elif event.event_type in (
+                    SyncEventType.LOCAL_DELETED,
+                    SyncEventType.REMOTE_DELETED,
+                ):
+                    transfer_type = TransferType.DELETE
+                    deleted.append(event.path)
+                    arrow = "✗"
+                else:
+                    continue
+
+                if not no_progress:
+                    click.echo(f"  {arrow} {event.path}")
+
+                # Submit to worker pool
+                pool.submit(
+                    event=event,
+                    transfer_type=transfer_type,
+                    on_complete=on_complete,
+                    on_error=on_error,
+                )
+
+            # Wait for all tasks to complete
+            import time
+            while pool.active_count > 0:
+                time.sleep(0.1)
+
+            pool.stop()
 
             # Display results summary
-            if result.conflicts:
+            if conflicts:
                 click.echo(click.style("\nConflicts:", fg="yellow"))
-                for path in result.conflicts:
+                for path in conflicts:
                     click.echo(f"  ! {path}")
+                    # Send system notification
+                    notify_conflict(Path(path).name, "another machine")
 
-            if result.errors:
+            if errors:
                 click.echo(click.style("\nErrors:", fg="red"))
-                for error in result.errors:
+                for error in errors:
                     click.echo(f"  ✗ {error}")
 
             # Summary
-            total = len(result.uploaded) + len(result.downloaded) + len(result.deleted)
-            if total == 0 and not result.conflicts and not result.errors:
+            total = len(uploaded) + len(downloaded) + len(deleted)
+            if total == 0 and not conflicts and not errors:
                 click.echo("Everything is up to date.")
             else:
                 click.echo(
-                    f"\nSync complete: {len(result.uploaded)} uploaded, "
-                    f"{len(result.downloaded)} downloaded, "
-                    f"{len(result.deleted)} deleted, "
-                    f"{len(result.conflicts)} conflicts"
+                    f"\nSync complete: {len(uploaded)} uploaded, "
+                    f"{len(downloaded)} downloaded, "
+                    f"{len(deleted)} deleted, "
+                    f"{len(conflicts)} conflicts"
                 )
 
         except Exception as e:
-            if progress_bar:
-                progress_bar.close()
+            pool.stop()
             click.echo(f"Sync error: {e}", err=True)
 
     if watch:
         # Continuous sync with file watching
-        from syncagent.client.sync.watcher import FileChange, FileWatcher
+        from syncagent.client.sync import FileWatcher
 
         click.echo("Watching for changes... (Ctrl+C to stop)\n")
 
         # Initial sync
         run_sync()
 
-        def on_changes(changes: list[FileChange]) -> None:
-            """Handle file changes."""
-            click.echo(f"\nDetected {len(changes)} change(s), syncing...")
-            # Mark changed files for upload
-            for change in changes:
-                if not change.is_directory:
-                    relative_path = str(Path(change.path).relative_to(sync_folder))
-                    state.add_pending_upload(relative_path)
-            run_sync()
-
-        watcher = FileWatcher(sync_folder, on_changes)
+        # Create watcher that injects events into the queue
+        watcher = FileWatcher(sync_folder, queue)
         try:
             watcher.start()
             # Keep running until interrupted
-            import time
             while True:
-                time.sleep(1)
+                # Check for new events from watcher
+                event = queue.get(timeout=1.0)
+                if event is not None:
+                    click.echo(f"\nDetected change: {event.path}, syncing...")
+                    # Put event back and run sync
+                    queue.put(event)
+                    run_sync()
         except KeyboardInterrupt:
             click.echo("\nStopping...")
             watcher.stop()

@@ -20,6 +20,7 @@ from httpx import Client
 from syncagent.client.api import SyncClient
 from syncagent.client.state import SyncState
 from syncagent.client.sync import FileDownloader, FileUploader, SyncEngine
+from syncagent.core.config import ServerConfig
 from syncagent.core.crypto import derive_key, generate_salt
 from syncagent.server.app import create_app
 from syncagent.server.database import Database
@@ -211,7 +212,8 @@ def client_factory(
             token = data["token"]
 
         # Create API client
-        api_client = SyncClient(test_server.url, token)
+        config = ServerConfig(server_url=test_server.url, token=token)
+        api_client = SyncClient(config)
 
         # Create uploader and downloader
         uploader = FileUploader(api_client, encryption_key)

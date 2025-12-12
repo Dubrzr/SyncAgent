@@ -12,7 +12,7 @@
     {% if machines %}
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
         {% for machine in machines %}
-        <div class="bg-white rounded-2xl border border-apple-gray-200 p-5 shadow-sm hover:shadow-md transition-shadow">
+        <div id="machine-card-{{ machine.id }}" class="bg-white rounded-2xl border border-apple-gray-200 p-5 shadow-sm hover:shadow-md transition-shadow">
             <div class="flex items-start justify-between">
                 <div class="flex items-center gap-3">
                     <!-- Device icon based on platform -->
@@ -38,19 +38,17 @@
                 </div>
 
                 <div class="flex items-center gap-2">
-                    <!-- Status indicator -->
-                    {% set minutes_ago = ((now - machine.last_seen).total_seconds() / 60) | int %}
-                    {% if minutes_ago < 5 %}
-                    <div class="flex items-center gap-1.5">
-                        <div class="w-2 h-2 bg-green-500 rounded-full"></div>
-                        <span class="text-xs text-green-600">Online</span>
+                    <!-- Live Status indicator (updated via WebSocket) -->
+                    <div id="status-{{ machine.id }}" class="flex items-center gap-1.5">
+                        {% set minutes_ago = ((now - machine.last_seen).total_seconds() / 60) | int %}
+                        {% if minutes_ago < 5 %}
+                        <div class="w-2 h-2 bg-green-500 rounded-full status-dot"></div>
+                        <span class="text-xs text-green-600 status-text">Online</span>
+                        {% else %}
+                        <div class="w-2 h-2 bg-apple-gray-300 rounded-full status-dot"></div>
+                        <span class="text-xs text-apple-gray-400 status-text">Offline</span>
+                        {% endif %}
                     </div>
-                    {% else %}
-                    <div class="flex items-center gap-1.5">
-                        <div class="w-2 h-2 bg-apple-gray-300 rounded-full"></div>
-                        <span class="text-xs text-apple-gray-400">Offline</span>
-                    </div>
-                    {% endif %}
 
                     <!-- Dropdown menu -->
                     <div class="relative" x-data="{ open: false }">
@@ -81,6 +79,19 @@
 
             <!-- Statistics -->
             <div class="mt-4 pt-4 border-t border-apple-gray-100">
+                <!-- Live Sync Info (updated via WebSocket) -->
+                <div id="sync-info-{{ machine.id }}" class="hidden mb-3 p-2.5 bg-blue-50 rounded-lg border border-blue-100">
+                    <div class="flex items-center justify-between text-xs mb-1">
+                        <span class="text-blue-600 font-medium">Syncing...</span>
+                        <span class="text-blue-600 sync-pending">0 pending</span>
+                    </div>
+                    <div class="flex items-center gap-3 text-xs text-blue-500">
+                        <span class="sync-uploads">↑ 0</span>
+                        <span class="sync-downloads">↓ 0</span>
+                        <span class="sync-speed">— KB/s</span>
+                    </div>
+                </div>
+
                 <div class="grid grid-cols-2 gap-3 mb-3">
                     <div class="bg-apple-gray-50 rounded-lg p-2.5 text-center">
                         <div class="text-lg font-semibold text-apple-gray-900">{{ machine_stats[machine.id].file_count }}</div>
@@ -198,4 +209,108 @@
     </div>
     {% endif %}
 </div>
+
+<!-- WebSocket Script for Real-Time Status Updates -->
+<script>
+(function() {
+    // Connect to WebSocket for real-time status updates
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws/dashboard`;
+    let ws = null;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 10;
+    const reconnectDelay = 2000;
+
+    function formatSpeed(bytesPerSec) {
+        if (bytesPerSec < 1024) return `${bytesPerSec} B/s`;
+        if (bytesPerSec < 1024 * 1024) return `${(bytesPerSec / 1024).toFixed(1)} KB/s`;
+        return `${(bytesPerSec / (1024 * 1024)).toFixed(1)} MB/s`;
+    }
+
+    function updateMachineStatus(status) {
+        const machineId = status.machine_id;
+        const statusEl = document.getElementById(`status-${machineId}`);
+        const syncInfoEl = document.getElementById(`sync-info-${machineId}`);
+
+        if (!statusEl) return;
+
+        const dot = statusEl.querySelector('.status-dot');
+        const text = statusEl.querySelector('.status-text');
+
+        // Update status indicator
+        switch (status.state) {
+            case 'syncing':
+                dot.className = 'w-2 h-2 bg-blue-500 rounded-full status-dot animate-pulse';
+                text.className = 'text-xs text-blue-600 status-text';
+                text.textContent = 'Syncing';
+                // Show sync info panel
+                if (syncInfoEl) {
+                    syncInfoEl.classList.remove('hidden');
+                    syncInfoEl.querySelector('.sync-pending').textContent = `${status.files_pending} pending`;
+                    syncInfoEl.querySelector('.sync-uploads').textContent = `↑ ${status.uploads_in_progress}`;
+                    syncInfoEl.querySelector('.sync-downloads').textContent = `↓ ${status.downloads_in_progress}`;
+                    const totalSpeed = status.upload_speed + status.download_speed;
+                    syncInfoEl.querySelector('.sync-speed').textContent = formatSpeed(totalSpeed);
+                }
+                break;
+            case 'idle':
+                dot.className = 'w-2 h-2 bg-green-500 rounded-full status-dot';
+                text.className = 'text-xs text-green-600 status-text';
+                text.textContent = 'Online';
+                if (syncInfoEl) syncInfoEl.classList.add('hidden');
+                break;
+            case 'error':
+                dot.className = 'w-2 h-2 bg-red-500 rounded-full status-dot';
+                text.className = 'text-xs text-red-600 status-text';
+                text.textContent = 'Error';
+                if (syncInfoEl) syncInfoEl.classList.add('hidden');
+                break;
+            case 'offline':
+            default:
+                dot.className = 'w-2 h-2 bg-apple-gray-300 rounded-full status-dot';
+                text.className = 'text-xs text-apple-gray-400 status-text';
+                text.textContent = 'Offline';
+                if (syncInfoEl) syncInfoEl.classList.add('hidden');
+                break;
+        }
+    }
+
+    function connect() {
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = function() {
+            console.log('Dashboard WebSocket connected');
+            reconnectAttempts = 0;
+        };
+
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+
+            if (data.type === 'all_status') {
+                // Initial status of all machines
+                data.machines.forEach(updateMachineStatus);
+            } else if (data.type === 'status_update') {
+                // Single machine update
+                updateMachineStatus(data.machine);
+            }
+        };
+
+        ws.onclose = function() {
+            console.log('Dashboard WebSocket disconnected');
+            // Attempt to reconnect
+            if (reconnectAttempts < maxReconnectAttempts) {
+                reconnectAttempts++;
+                setTimeout(connect, reconnectDelay * reconnectAttempts);
+            }
+        };
+
+        ws.onerror = function(error) {
+            console.error('WebSocket error:', error);
+        };
+    }
+
+    // Start connection
+    connect();
+})();
+</script>
 {% endblock %}

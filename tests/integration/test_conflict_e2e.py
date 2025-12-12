@@ -8,6 +8,7 @@ from __future__ import annotations
 import pytest
 
 from syncagent.client.api import ConflictError
+from syncagent.client.sync.types import EarlyConflictError
 from tests.integration.conftest import SyncTestClient
 
 
@@ -34,8 +35,9 @@ class TestConflictDetection:
         assert result_a.server_version == 2
 
         # Client B tries to update with stale parent_version (1 instead of 2)
+        # This raises either ConflictError (server-side) or EarlyConflictError (pre-transfer check)
         local_path_b = client_b.create_file("shared.txt", "Client B's update")
-        with pytest.raises(ConflictError):
+        with pytest.raises((ConflictError, EarlyConflictError)):
             client_b.uploader.upload_file(
                 local_path_b, "shared.txt", parent_version=1
             )
@@ -94,8 +96,9 @@ class TestConflictDetection:
         assert result.server_version == 4
 
         # Client B tries to update from version 2 (stale)
+        # This raises either ConflictError (server-side) or EarlyConflictError (pre-transfer check)
         local_path_b = client_b.create_file("evolving.txt", "B's changes")
-        with pytest.raises(ConflictError):
+        with pytest.raises((ConflictError, EarlyConflictError)):
             client_b.uploader.upload_file(
                 local_path_b, "evolving.txt", parent_version=2
             )
@@ -141,8 +144,9 @@ class TestConflictRecovery:
         client_a.uploader.upload_file(local_path_a, "retry.txt", parent_version=1)
 
         # Client B tries with stale version (should fail)
+        # This raises either ConflictError (server-side) or EarlyConflictError (pre-transfer check)
         local_path_b = client_b.create_file("retry.txt", "B's changes")
-        with pytest.raises(ConflictError):
+        with pytest.raises((ConflictError, EarlyConflictError)):
             client_b.uploader.upload_file(
                 local_path_b, "retry.txt", parent_version=1
             )

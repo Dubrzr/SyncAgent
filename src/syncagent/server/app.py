@@ -24,6 +24,8 @@ from syncagent.server.database import Database
 from syncagent.server.scheduler import TrashPurgeScheduler
 from syncagent.server.storage import ChunkStorage, create_storage
 from syncagent.server.web import router as web_router
+from syncagent.server.ws import StatusHub, set_hub
+from syncagent.server.ws import router as ws_router
 
 # Configuration from environment variables with defaults
 DB_PATH = Path(os.environ.get("SYNCAGENT_DB_PATH", "syncagent.db"))
@@ -155,13 +157,19 @@ def create_app(
         lifespan=lifespan,
     )
 
+    # Create and set WebSocket hub
+    status_hub = StatusHub()
+    set_hub(status_hub)
+
     application.state.db = db
     application.state.storage = storage
     application.state.scheduler = scheduler
     application.state.trash_retention_days = trash_retention_days
+    application.state.status_hub = status_hub
 
     application.include_router(api_router)
     application.include_router(web_router)
+    application.include_router(ws_router)
 
     return application
 

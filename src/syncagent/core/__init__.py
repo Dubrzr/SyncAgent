@@ -9,6 +9,7 @@ from syncagent.core.chunking import (
     chunk_file,
     get_chunk_hash,
 )
+from syncagent.core.config import ServerConfig
 from syncagent.core.crypto import (
     compute_file_hash,
     decrypt_chunk,
@@ -16,6 +17,7 @@ from syncagent.core.crypto import (
     encrypt_chunk,
     generate_salt,
 )
+from syncagent.core.types import SyncState
 
 __all__ = [
     # Chunking
@@ -26,10 +28,14 @@ __all__ = [
     "chunk_bytes",
     "chunk_file",
     "get_chunk_hash",
+    # Config
+    "ServerConfig",
     # Crypto
     "compute_file_hash",
     "decrypt_chunk",
     "derive_key",
     "encrypt_chunk",
     "generate_salt",
+    # Types
+    "SyncState",
 ]

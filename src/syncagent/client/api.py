@@ -15,6 +15,8 @@ from typing import Any
 
 import httpx
 
+from syncagent.core.config import ServerConfig
+
 logger = logging.getLogger(__name__)
 
 
@@ -128,26 +130,23 @@ class ChangesResult:
 class SyncClient:
     """HTTP client for SyncAgent server API."""
 
-    def __init__(
-        self,
-        server_url: str,
-        token: str,
-        timeout: float = 30.0,
-    ) -> None:
+    def __init__(self, config: ServerConfig) -> None:
         """Initialize the sync client.
 
         Args:
-            server_url: Base URL of the server.
-            token: Authentication token.
-            timeout: Request timeout in seconds.
+            config: Server configuration with URL, token, and settings.
         """
-        self._server_url = server_url.rstrip("/")
-        self._token = token
-        self._timeout = timeout
+        self._config = config
+        self._server_url = config.server_url
+        self._token = config.token
+        self._timeout = config.timeout
+        self._verify_ssl = config.verify_ssl
+
         self._client = httpx.Client(
             base_url=self._server_url,
-            timeout=timeout,
-            headers={"Authorization": f"Bearer {token}"},
+            timeout=self._timeout,
+            headers={"Authorization": f"Bearer {self._token}"},
+            verify=self._verify_ssl,
         )
 
     def close(self) -> None:
