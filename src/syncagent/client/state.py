@@ -117,7 +117,7 @@ class SyncState:
         self._conn = sqlite3.connect(
             str(self._db_path),
             check_same_thread=False,
-            isolation_level="DEFERRED",  # Explicit transaction mode for Python 3.12+
+            isolation_level=None,  # Autocommit mode - each statement auto-commits
         )
         self._conn.row_factory = sqlite3.Row
 
@@ -178,7 +178,7 @@ class SyncState:
             CREATE INDEX IF NOT EXISTS idx_upload_progress_path
                 ON upload_progress(path);
         """)
-        self._conn.commit()
+        # Autocommit mode - no explicit commit needed
 
     def close(self) -> None:
         """Close the database connection."""
@@ -214,7 +214,7 @@ class SyncState:
             """,
             (path, local_mtime, local_size, local_hash, status.value),
         )
-        self._conn.commit()
+        # Autocommit mode - no explicit commit needed
 
         return LocalFile(
             id=cursor.lastrowid or 0,
@@ -300,7 +300,7 @@ class SyncState:
             f"UPDATE local_files SET {', '.join(updates)} WHERE path = ?",
             values,
         )
-        self._conn.commit()
+        # Autocommit mode - no explicit commit needed
 
     def delete_file(self, path: str) -> None:
         """Delete a file from tracking.
@@ -309,7 +309,7 @@ class SyncState:
             path: Relative path of the file.
         """
         self._conn.execute("DELETE FROM local_files WHERE path = ?", (path,))
-        self._conn.commit()
+        # Autocommit mode - no explicit commit needed
 
     def list_files(self, status: FileStatus | None = None) -> list[LocalFile]:
         """List tracked files.
@@ -369,7 +369,7 @@ class SyncState:
     def remove_file(self, path: str) -> None:
         """Remove a file from the state database."""
         self._conn.execute("DELETE FROM local_files WHERE path = ?", (path,))
-        self._conn.commit()
+        # Autocommit mode - no explicit commit needed
 
     # === Pending uploads ===
 
@@ -386,7 +386,7 @@ class SyncState:
             """,
             (path, time.time()),
         )
-        self._conn.commit()
+        # Autocommit mode - no explicit commit needed
 
     def get_pending_uploads(self) -> list[PendingUpload]:
         """Get all pending uploads ordered by detection time."""
@@ -420,7 +420,7 @@ class SyncState:
             """,
             (time.time(), error, path),
         )
-        self._conn.commit()
+        # Autocommit mode - no explicit commit needed
 
     def remove_pending_upload(self, path: str) -> None:
         """Remove a file from pending uploads.
@@ -429,12 +429,12 @@ class SyncState:
             path: Relative path.
         """
         self._conn.execute("DELETE FROM pending_uploads WHERE path = ?", (path,))
-        self._conn.commit()
+        # Autocommit mode - no explicit commit needed
 
     def clear_pending_uploads(self) -> None:
         """Clear all pending uploads."""
         self._conn.execute("DELETE FROM pending_uploads")
-        self._conn.commit()
+        # Autocommit mode - no explicit commit needed
 
     # === Sync state ===
 
@@ -465,7 +465,7 @@ class SyncState:
             "INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)",
             (key, value),
         )
-        self._conn.commit()
+        # Autocommit mode - no explicit commit needed
 
     def get_last_sync_at(self) -> float | None:
         """Get timestamp of last successful sync."""
@@ -524,7 +524,7 @@ class SyncState:
             """,
             (path, len(chunk_hashes), json.dumps(chunk_hashes), now, now),
         )
-        self._conn.commit()
+        # Autocommit mode - no explicit commit needed
 
         return UploadProgress(
             id=0,
@@ -594,7 +594,7 @@ class SyncState:
                 path,
             ),
         )
-        self._conn.commit()
+        # Autocommit mode - no explicit commit needed
 
     def clear_upload_progress(self, path: str) -> None:
         """Clear upload progress for a file (after successful upload).
@@ -603,7 +603,7 @@ class SyncState:
             path: Relative path of the file.
         """
         self._conn.execute("DELETE FROM upload_progress WHERE path = ?", (path,))
-        self._conn.commit()
+        # Autocommit mode - no explicit commit needed
 
     def get_remaining_chunks(self, path: str) -> list[str]:
         """Get list of chunk hashes that haven't been uploaded yet.
@@ -624,4 +624,4 @@ class SyncState:
     def clear_all_upload_progress(self) -> None:
         """Clear all upload progress records."""
         self._conn.execute("DELETE FROM upload_progress")
-        self._conn.commit()
+        # Autocommit mode - no explicit commit needed
