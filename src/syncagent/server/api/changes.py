@@ -15,7 +15,7 @@ from syncagent.server.database import Database
 from syncagent.server.models import Token
 from syncagent.server.schemas import ChangesResponse, change_to_response
 
-router = APIRouter(prefix="/changes", tags=["changes"])
+router = APIRouter(prefix="/api/changes", tags=["changes"])
 
 
 @router.get("", response_model=ChangesResponse)
