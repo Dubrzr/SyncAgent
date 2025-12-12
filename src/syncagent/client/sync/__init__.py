@@ -18,12 +18,7 @@ from syncagent.client.sync.conflict import (
 )
 from syncagent.client.sync.download import FileDownloader
 from syncagent.client.sync.engine import SyncEngine
-from syncagent.client.sync.queue import (
-    EventQueue,
-    SyncEvent,
-    SyncEventSource,
-    SyncEventType,
-)
+from syncagent.client.sync.queue import EventQueue
 from syncagent.client.sync.retry import (
     DEFAULT_BACKOFF_MULTIPLIER,
     DEFAULT_INITIAL_BACKOFF,
@@ -42,6 +37,9 @@ from syncagent.client.sync.types import (
     DownloadResult,
     ProgressCallback,
     SyncError,
+    SyncEvent,
+    SyncEventSource,
+    SyncEventType,
     SyncProgress,
     SyncResult,
     UploadError,
@@ -73,6 +71,9 @@ __all__ = [
     "DownloadResult",
     "ProgressCallback",
     "SyncError",
+    "SyncEvent",
+    "SyncEventSource",
+    "SyncEventType",
     "SyncProgress",
     "SyncResult",
     "UploadError",
@@ -83,9 +84,6 @@ __all__ = [
     "SyncEngine",
     # Event Queue
     "EventQueue",
-    "SyncEvent",
-    "SyncEventSource",
-    "SyncEventType",
     # Conflict utilities
     "generate_conflict_filename",
     "get_machine_name",
