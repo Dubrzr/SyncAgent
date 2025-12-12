@@ -17,6 +17,8 @@ from syncagent.client.sync import (
     generate_conflict_filename,
     get_machine_name,
     retry_with_backoff,
+    retry_with_network_wait,
+    wait_for_network,
 )
 from syncagent.core.crypto import derive_key, generate_salt
 
@@ -1018,6 +1020,7 @@ class TestDownloadRetry:
 
         mock_client.get_file_chunks.return_value = ["hash"]
         mock_client.download_chunk.side_effect = download_with_failures
+        mock_client.health_check.return_value = True
 
         with patch("syncagent.client.sync.time.sleep"):
             downloader = FileDownloader(mock_client, encryption_key, max_retries=5)
@@ -1025,4 +1028,161 @@ class TestDownloadRetry:
             downloader.download_file(server_file, local_path)
 
         assert local_path.exists()
+        assert call_count["count"] == 3
+
+
+class TestWaitForNetwork:
+    """Tests for wait_for_network function (network-aware retry)."""
+
+    def test_returns_immediately_if_network_up(self, mock_client: MagicMock) -> None:
+        """Should return after first successful health check."""
+        mock_client.health_check.return_value = True
+
+        with patch("syncagent.client.sync.time.sleep"):
+            wait_for_network(mock_client, check_interval=1.0)
+
+        # Only one sleep call before health check
+        assert mock_client.health_check.call_count == 1
+
+    def test_polls_until_network_restored(self, mock_client: MagicMock) -> None:
+        """Should poll until network comes back."""
+        # Fail 3 times, then succeed
+        mock_client.health_check.side_effect = [False, False, False, True]
+
+        with patch("syncagent.client.sync.time.sleep") as mock_sleep:
+            wait_for_network(mock_client, check_interval=5.0)
+
+        assert mock_client.health_check.call_count == 4
+        assert mock_sleep.call_count == 4  # Sleep before each check
+
+    def test_calls_callbacks(self, mock_client: MagicMock) -> None:
+        """Should call on_waiting and on_restored callbacks."""
+        mock_client.health_check.side_effect = [False, True]
+        on_waiting = MagicMock()
+        on_restored = MagicMock()
+
+        with patch("syncagent.client.sync.time.sleep"):
+            wait_for_network(
+                mock_client,
+                on_waiting=on_waiting,
+                on_restored=on_restored,
+            )
+
+        on_waiting.assert_called_once()
+        on_restored.assert_called_once()
+
+
+class TestRetryWithNetworkWait:
+    """Tests for retry_with_network_wait function."""
+
+    def test_succeeds_on_first_try(self, mock_client: MagicMock) -> None:
+        """Should return result when function succeeds first try."""
+        result = retry_with_network_wait(
+            func=lambda: "success",
+            client=mock_client,
+            max_retries=3,
+        )
+
+        assert result == "success"
+        mock_client.health_check.assert_not_called()
+
+    def test_waits_for_network_on_connection_error(
+        self, mock_client: MagicMock
+    ) -> None:
+        """Should wait for network when ConnectionError occurs."""
+        call_count = {"count": 0}
+
+        def fail_then_succeed() -> str:
+            call_count["count"] += 1
+            if call_count["count"] == 1:
+                raise ConnectionError("Network down")
+            return "success"
+
+        mock_client.health_check.return_value = True
+
+        with patch("syncagent.client.sync.time.sleep"):
+            result = retry_with_network_wait(
+                func=fail_then_succeed,
+                client=mock_client,
+            )
+
+        assert result == "success"
+        assert call_count["count"] == 2
+        mock_client.health_check.assert_called()
+
+    def test_waits_for_network_on_timeout_error(self, mock_client: MagicMock) -> None:
+        """Should wait for network when TimeoutError occurs."""
+        call_count = {"count": 0}
+
+        def fail_then_succeed() -> str:
+            call_count["count"] += 1
+            if call_count["count"] == 1:
+                raise TimeoutError("Request timeout")
+            return "success"
+
+        mock_client.health_check.return_value = True
+
+        with patch("syncagent.client.sync.time.sleep"):
+            result = retry_with_network_wait(
+                func=fail_then_succeed,
+                client=mock_client,
+            )
+
+        assert result == "success"
+        assert call_count["count"] == 2
+
+    def test_uses_backoff_for_non_network_errors(
+        self, mock_client: MagicMock
+    ) -> None:
+        """Should use exponential backoff for non-network errors."""
+        call_count = {"count": 0}
+        sleep_times: list[float] = []
+
+        def fail_twice() -> str:
+            call_count["count"] += 1
+            if call_count["count"] < 3:
+                raise ValueError("Bad value")
+            return "success"
+
+        with patch("syncagent.client.sync.time.sleep") as mock_sleep:
+            mock_sleep.side_effect = lambda t: sleep_times.append(t)
+            result = retry_with_network_wait(
+                func=fail_twice,
+                client=mock_client,
+                max_retries=5,
+                initial_backoff=1.0,
+                backoff_multiplier=2.0,
+                retryable_exceptions=(ValueError,),
+            )
+
+        assert result == "success"
+        assert len(sleep_times) == 2
+        assert sleep_times[0] == 1.0
+        assert sleep_times[1] == 2.0
+        # Health check not called for non-network errors
+        mock_client.health_check.assert_not_called()
+
+    def test_resets_after_network_wait(self, mock_client: MagicMock) -> None:
+        """Should reset retry count after network wait."""
+        call_count = {"count": 0}
+
+        def network_then_value_error() -> str:
+            call_count["count"] += 1
+            if call_count["count"] == 1:
+                raise ConnectionError("Network down")
+            if call_count["count"] == 2:
+                raise ValueError("Bad value")
+            return "success"
+
+        mock_client.health_check.return_value = True
+
+        with patch("syncagent.client.sync.time.sleep"):
+            result = retry_with_network_wait(
+                func=network_then_value_error,
+                client=mock_client,
+                max_retries=5,
+                retryable_exceptions=(ValueError,),
+            )
+
+        assert result == "success"
         assert call_count["count"] == 3
