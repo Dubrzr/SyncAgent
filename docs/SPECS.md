@@ -489,7 +489,7 @@ def create_admin(username: str, password: str, password_confirm: str):
 <!-- Le front ne voit que ça -->
 <tr>
   <td>
-    <a href="syncfile://open?path=/docs/rapport.pdf&machine=laptop">
+    <a href="syncfile://open?path=/docs/rapport.pdf">
       rapport.pdf
     </a>
   </td>
@@ -877,10 +877,9 @@ CREATE TABLE machines (
 ```json
 // ~/.syncagent/config.json
 {
-  "machine_id": "uuid-généré-par-serveur",
   "machine_name": "laptop-julien",
   "server_url": "https://sync.mondomaine.com",
-  "token": "token-secret-stocké-localement",
+  "auth_token": "token-secret-stocké-localement",
   "local_path": "/home/user/Sync",
   "cdc": {
     "avg_size": 4194304,   // 4 MB moyenne
@@ -1460,12 +1459,11 @@ def sync_file_cdc(file_path: str, file_id: int):
 
 ### 7.1 Format
 ```
-syncfile://open?path=<relative_path>&machine=<machine_id>
-syncfile://reveal?path=<relative_path>&machine=<machine_id>
+syncfile://open?path=<relative_path>
+syncfile://reveal?path=<relative_path>
 ```
 
 ### 7.2 Sécurité
-- Vérifie que `machine_id` correspond à la machine locale
 - Vérifie que le path est dans le dossier sync
 - N'exécute jamais de commandes arbitraires
 
@@ -1559,7 +1557,7 @@ MimeType=x-scheme-handler/syncfile;
 
 #### Handler unifié (CLI)
 ```python
-# syncagent protocol "syncfile://open?path=/docs/file.txt&machine=laptop"
+# syncagent protocol "syncfile://open?path=/docs/file.txt"
 import sys
 from urllib.parse import urlparse, parse_qs
 
@@ -1574,11 +1572,8 @@ def handle_protocol_url(url: str):
     params = parse_qs(parsed.query)
 
     path = params.get("path", [None])[0]
-    machine = params.get("machine", [None])[0]
-
-    # Vérifier que c'est bien cette machine
-    if machine != get_local_machine_id():
-        raise ValueError("URL destinée à une autre machine")
+    if not path:
+        raise ValueError("Paramètre 'path' requis")
 
     # Vérifier que le path est dans le dossier sync
     full_path = get_sync_folder() / path.lstrip("/")

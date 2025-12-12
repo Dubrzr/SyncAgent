@@ -372,13 +372,11 @@ def register(server: str, token: str, name: str | None) -> None:
         # Save configuration
         config["server_url"] = server.rstrip("/")
         config["auth_token"] = auth_token
-        config["machine_id"] = str(machine_info["id"])
         config["machine_name"] = machine_info["name"]
         save_config(config)
 
         click.echo("\nMachine registered successfully!")
         click.echo(f"Server: {server}")
-        click.echo(f"Machine ID: {machine_info['id']}")
         click.echo(f"Machine name: {machine_info['name']}")
 
     except httpx.ConnectError:
