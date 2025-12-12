@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from syncagent.server.models import FileMetadata, Machine
+from syncagent.server.models import ChangeLog, FileMetadata, Machine
 
 # === Machine schemas ===
 
@@ -102,4 +102,38 @@ def file_to_response(file: FileMetadata) -> FileResponse:
         created_at=file.created_at.isoformat(),
         updated_at=file.updated_at.isoformat(),
         deleted_at=file.deleted_at.isoformat() if file.deleted_at else None,
+    )
+
+
+# === Change log schemas ===
+
+
+class ChangeResponse(BaseModel):
+    """Single change entry in response."""
+
+    id: int
+    file_path: str
+    action: str  # CREATED, UPDATED, DELETED
+    version: int
+    machine_id: int
+    timestamp: str
+
+
+class ChangesResponse(BaseModel):
+    """Response for /api/changes endpoint."""
+
+    changes: list[ChangeResponse]
+    has_more: bool  # True if there are more changes (limit was hit)
+    latest_timestamp: str | None  # Timestamp of last change in response
+
+
+def change_to_response(change: ChangeLog) -> ChangeResponse:
+    """Convert ChangeLog to response model."""
+    return ChangeResponse(
+        id=change.id,
+        file_path=change.file_path,
+        action=change.action,
+        version=change.version,
+        machine_id=change.machine_id,
+        timestamp=change.timestamp.isoformat(),
     )

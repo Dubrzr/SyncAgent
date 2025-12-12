@@ -8,7 +8,6 @@ import pytest
 from syncagent.client.api import ConflictError, NotFoundError, ServerFile, SyncClient
 from syncagent.client.state import FileStatus, SyncState
 from syncagent.client.sync import (
-    ConflictInfo,
     DownloadError,
     FileDownloader,
     FileUploader,
@@ -266,215 +265,203 @@ class TestFileDownloader:
 
 
 class TestSyncEngine:
-    """Tests for SyncEngine."""
+    """Tests for SyncEngine (event-based scanner).
 
-    def test_push_new_file(
+    SyncEngine scans for changes and pushes SyncEvent objects to the queue.
+    Actual sync work is done by Workers via the Coordinator.
+    """
+
+    def test_scan_detects_new_local_files(
         self,
         tmp_path: Path,
         mock_client: MagicMock,
         sync_state: SyncState,
-        encryption_key: bytes,
     ) -> None:
-        """Should push a new file to server."""
+        """Should push LOCAL_CREATED events for new files."""
+        from syncagent.client.sync import EventQueue, SyncEventType
+
         base_path = tmp_path / "sync"
         base_path.mkdir()
 
+        # Create a new file
         test_file = base_path / "new.txt"
         test_file.write_text("New file content")
 
-        # Track the file locally
-        sync_state.add_file("new.txt", status=FileStatus.NEW)
+        mock_client.list_files.return_value = []
 
-        mock_client.chunk_exists.return_value = False
-        mock_client.get_file.side_effect = NotFoundError("Not found")
-        server_response = MagicMock()
-        server_response.id = 1
-        server_response.version = 1
-        mock_client.create_file.return_value = server_response
-        mock_client.get_file_chunks.return_value = []
+        queue = EventQueue()
+        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        result = engine.scan()
 
-        engine = SyncEngine(mock_client, sync_state, base_path, encryption_key)
-        result = engine.push_file("new.txt")
+        assert "new.txt" in result.uploaded
 
-        assert result is not None
-        assert result.server_file_id == 1
+        # Verify event was pushed to queue
+        event = queue.get(timeout=0.1)
+        assert event is not None
+        assert event.path == "new.txt"
+        assert event.event_type == SyncEventType.LOCAL_CREATED
 
-        # Should be marked as synced
-        local_file = sync_state.get_file("new.txt")
-        assert local_file is not None
-        assert local_file.status == FileStatus.SYNCED
-
-    def test_push_modified_file(
+    def test_scan_detects_modified_local_files(
         self,
         tmp_path: Path,
         mock_client: MagicMock,
         sync_state: SyncState,
-        encryption_key: bytes,
     ) -> None:
-        """Should push a modified file to server."""
+        """Should push LOCAL_MODIFIED events for modified files."""
+        import time
+
+        from syncagent.client.sync import EventQueue, SyncEventType
+
         base_path = tmp_path / "sync"
         base_path.mkdir()
 
-        test_file = base_path / "modified.txt"
+        # Create and track file as synced
+        test_file = base_path / "existing.txt"
+        test_file.write_text("Original content")
+
+        sync_state.add_file(
+            "existing.txt",
+            local_mtime=test_file.stat().st_mtime - 10,  # Old mtime
+            local_size=len("Original content"),
+            status=FileStatus.SYNCED,
+        )
+        sync_state.update_file("existing.txt", server_file_id=1, server_version=1)
+
+        # Modify the file
+        time.sleep(0.01)
         test_file.write_text("Modified content")
 
-        # Track as existing file
-        sync_state.add_file("modified.txt", status=FileStatus.MODIFIED)
-        sync_state.update_file("modified.txt", server_file_id=1, server_version=2)
+        mock_client.list_files.return_value = []
 
-        # Mock server file for conflict detection check
-        server_file = MagicMock(spec=ServerFile)
-        server_file.path = "modified.txt"
-        server_file.version = 2
-        server_file.id = 1
+        queue = EventQueue()
+        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        result = engine.scan()
 
-        mock_client.chunk_exists.return_value = False
-        mock_client.get_file.return_value = server_file
-        updated_response = MagicMock()
-        updated_response.id = 1
-        updated_response.version = 3
-        mock_client.update_file.return_value = updated_response
-        mock_client.get_file_chunks.return_value = []
+        assert "existing.txt" in result.uploaded
 
-        engine = SyncEngine(mock_client, sync_state, base_path, encryption_key)
-        result = engine.push_file("modified.txt")
+        event = queue.get(timeout=0.1)
+        assert event is not None
+        assert event.path == "existing.txt"
+        assert event.event_type == SyncEventType.LOCAL_MODIFIED
 
-        assert result is not None
-        assert result.server_version == 3
-        mock_client.update_file.assert_called_once()
-
-    def test_push_conflict(
+    def test_scan_detects_deleted_local_files(
         self,
         tmp_path: Path,
         mock_client: MagicMock,
         sync_state: SyncState,
-        encryption_key: bytes,
     ) -> None:
-        """Should mark file as conflict when version mismatch and different content."""
-        from syncagent.core.crypto import encrypt_chunk
+        """Should push LOCAL_DELETED events for deleted files."""
+        from syncagent.client.sync import EventQueue, SyncEventType
 
         base_path = tmp_path / "sync"
         base_path.mkdir()
 
-        test_file = base_path / "conflict.txt"
-        test_file.write_text("Local changes")
+        # Track file as synced (but don't create it on disk)
+        sync_state.add_file("deleted.txt", status=FileStatus.SYNCED)
+        sync_state.update_file("deleted.txt", server_file_id=1, server_version=1)
 
-        sync_state.add_file("conflict.txt", status=FileStatus.MODIFIED)
-        sync_state.update_file("conflict.txt", server_file_id=1, server_version=2)
+        mock_client.list_files.return_value = []
 
-        # Server file with different content hash
-        server_file = MagicMock(spec=ServerFile)
-        server_file.path = "conflict.txt"
-        server_file.size = 14
-        server_file.version = 3
-        server_file.id = 1
-        server_file.content_hash = "different_hash"
+        queue = EventQueue()
+        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        result = engine.scan()
 
-        encrypted = encrypt_chunk(b"Server content", encryption_key)
+        assert "deleted.txt" in result.deleted
 
-        mock_client.chunk_exists.return_value = False
-        mock_client.update_file.side_effect = ConflictError("Version conflict")
-        mock_client.get_file.return_value = server_file
-        mock_client.get_file_chunks.return_value = ["chunk1"]
-        mock_client.download_chunk.return_value = encrypted
+        event = queue.get(timeout=0.1)
+        assert event is not None
+        assert event.path == "deleted.txt"
+        assert event.event_type == SyncEventType.LOCAL_DELETED
 
-        engine = SyncEngine(mock_client, sync_state, base_path, encryption_key)
-        result = engine.push_file("conflict.txt")
-
-        assert result is None
-
-        local_file = sync_state.get_file("conflict.txt")
-        assert local_file is not None
-        assert local_file.status == FileStatus.CONFLICT
-
-    def test_pull_new_file(
+    def test_scan_detects_new_remote_files(
         self,
         tmp_path: Path,
         mock_client: MagicMock,
         sync_state: SyncState,
-        encryption_key: bytes,
     ) -> None:
-        """Should pull a new file from server."""
-        from syncagent.core.crypto import encrypt_chunk
+        """Should push REMOTE_CREATED events for new server files."""
+        from syncagent.client.sync import EventQueue, SyncEventType
 
         base_path = tmp_path / "sync"
         base_path.mkdir()
 
-        encrypted = encrypt_chunk(b"Server content", encryption_key)
-
+        # Server has a file not in local state
         server_file = MagicMock(spec=ServerFile)
         server_file.path = "remote.txt"
-        server_file.size = 14
         server_file.version = 1
         server_file.id = 1
-        server_file.content_hash = "hash123"
-
-        mock_client.get_file_chunks.return_value = ["chunk_hash"]
-        mock_client.download_chunk.return_value = encrypted
-
-        engine = SyncEngine(mock_client, sync_state, base_path, encryption_key)
-        result = engine.pull_file(server_file)
-
-        assert result.path == "remote.txt"
-        assert (base_path / "remote.txt").exists()
-        assert (base_path / "remote.txt").read_bytes() == b"Server content"
-
-    def test_sync_pushes_and_pulls(
-        self,
-        tmp_path: Path,
-        mock_client: MagicMock,
-        sync_state: SyncState,
-        encryption_key: bytes,
-    ) -> None:
-        """Should sync both directions."""
-        from syncagent.core.crypto import encrypt_chunk
-
-        base_path = tmp_path / "sync"
-        base_path.mkdir()
-
-        # Create local file to push
-        local_file = base_path / "local.txt"
-        local_file.write_text("Local content")
-        sync_state.add_file("local.txt", status=FileStatus.NEW)
-
-        # Mock server file to pull
-        encrypted = encrypt_chunk(b"Remote content", encryption_key)
-        server_file = MagicMock(spec=ServerFile)
-        server_file.path = "remote.txt"
-        server_file.size = 14
-        server_file.version = 1
-        server_file.id = 2
-        server_file.content_hash = "remotehash"
 
         mock_client.list_files.return_value = [server_file]
-        mock_client.chunk_exists.return_value = False
-        mock_client.get_file.side_effect = NotFoundError("Not found")
-        server_response = MagicMock()
-        server_response.id = 1
-        server_response.version = 1
-        mock_client.create_file.return_value = server_response
-        mock_client.get_file_chunks.return_value = ["chunk_hash"]
-        mock_client.download_chunk.return_value = encrypted
 
-        engine = SyncEngine(mock_client, sync_state, base_path, encryption_key)
-        result = engine.sync()
+        queue = EventQueue()
+        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        result = engine.scan()
 
-        assert "local.txt" in result.uploaded
         assert "remote.txt" in result.downloaded
 
-    def test_sync_skips_up_to_date(
+        event = queue.get(timeout=0.1)
+        assert event is not None
+        assert event.path == "remote.txt"
+        assert event.event_type == SyncEventType.REMOTE_CREATED
+
+    def test_scan_detects_modified_remote_files(
         self,
         tmp_path: Path,
         mock_client: MagicMock,
         sync_state: SyncState,
-        encryption_key: bytes,
     ) -> None:
-        """Should skip files that are already in sync."""
+        """Should push REMOTE_MODIFIED events for modified server files."""
+        from syncagent.client.sync import EventQueue, SyncEventType
+
         base_path = tmp_path / "sync"
         base_path.mkdir()
 
-        # Track file as already synced
-        sync_state.add_file("synced.txt", status=FileStatus.SYNCED)
+        # Track file as synced with old version
+        sync_state.add_file("remote.txt", status=FileStatus.SYNCED)
+        sync_state.update_file("remote.txt", server_file_id=1, server_version=1)
+
+        # Server has newer version
+        server_file = MagicMock(spec=ServerFile)
+        server_file.path = "remote.txt"
+        server_file.version = 2  # Newer version
+        server_file.id = 1
+
+        mock_client.list_files.return_value = [server_file]
+
+        queue = EventQueue()
+        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        result = engine.scan()
+
+        assert "remote.txt" in result.downloaded
+
+        event = queue.get(timeout=0.1)
+        assert event is not None
+        assert event.path == "remote.txt"
+        assert event.event_type == SyncEventType.REMOTE_MODIFIED
+
+    def test_scan_skips_up_to_date_remote_files(
+        self,
+        tmp_path: Path,
+        mock_client: MagicMock,
+        sync_state: SyncState,
+    ) -> None:
+        """Should not push events for files already in sync."""
+        from syncagent.client.sync import EventQueue
+
+        base_path = tmp_path / "sync"
+        base_path.mkdir()
+
+        # Create local file
+        test_file = base_path / "synced.txt"
+        test_file.write_text("Content")
+
+        # Track as synced with same version
+        sync_state.add_file(
+            "synced.txt",
+            local_mtime=test_file.stat().st_mtime,
+            local_size=len("Content"),
+            status=FileStatus.SYNCED,
+        )
         sync_state.update_file("synced.txt", server_file_id=1, server_version=5)
 
         # Server has same version
@@ -485,27 +472,34 @@ class TestSyncEngine:
 
         mock_client.list_files.return_value = [server_file]
 
-        engine = SyncEngine(mock_client, sync_state, base_path, encryption_key)
-        result = engine.sync()
+        queue = EventQueue()
+        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        result = engine.scan()
 
-        assert len(result.downloaded) == 0
-        mock_client.download_chunk.assert_not_called()
+        assert "synced.txt" not in result.uploaded
+        assert "synced.txt" not in result.downloaded
 
-    def test_sync_skips_local_changes(
+        # Queue should be empty
+        event = queue.get(timeout=0.1)
+        assert event is None
+
+    def test_scan_skips_remote_when_local_pending(
         self,
         tmp_path: Path,
         mock_client: MagicMock,
         sync_state: SyncState,
-        encryption_key: bytes,
     ) -> None:
-        """Should not overwrite local changes with server version."""
+        """Should not push REMOTE events when local has pending changes."""
+        from syncagent.client.sync import EventQueue, SyncEventType
+
         base_path = tmp_path / "sync"
         base_path.mkdir()
 
         # Create local file with changes
-        local_file = base_path / "changed.txt"
-        local_file.write_text("Local changes")
+        test_file = base_path / "changed.txt"
+        test_file.write_text("Local changes")
 
+        # Track as modified locally
         sync_state.add_file("changed.txt", status=FileStatus.MODIFIED)
         sync_state.update_file("changed.txt", server_file_id=1, server_version=2)
 
@@ -515,136 +509,77 @@ class TestSyncEngine:
         server_file.version = 3
         server_file.id = 1
 
-        # Mock upload - get_file is called for conflict detection
         mock_client.list_files.return_value = [server_file]
-        mock_client.get_file.return_value = server_file
-        mock_client.chunk_exists.return_value = False
-        updated_response = MagicMock()
-        updated_response.id = 1
-        updated_response.version = 4
-        mock_client.update_file.return_value = updated_response
-        mock_client.get_file_chunks.return_value = []
 
-        engine = SyncEngine(mock_client, sync_state, base_path, encryption_key)
-        result = engine.sync()
+        queue = EventQueue()
+        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        result = engine.scan()
 
-        # Should upload local, not download server
+        # Should queue local upload, not remote download
         assert "changed.txt" in result.uploaded
         assert "changed.txt" not in result.downloaded
 
-    def test_conflict_with_same_hash_auto_resolves(
+        event = queue.get(timeout=0.1)
+        assert event is not None
+        assert event.path == "changed.txt"
+        assert event.event_type == SyncEventType.LOCAL_MODIFIED
+
+        # No more events
+        event = queue.get(timeout=0.1)
+        assert event is None
+
+    def test_scan_includes_already_pending_files(
         self,
         tmp_path: Path,
         mock_client: MagicMock,
         sync_state: SyncState,
-        encryption_key: bytes,
     ) -> None:
-        """Should auto-resolve when local and server have same content."""
+        """Should include files already marked as NEW or MODIFIED."""
+        from syncagent.client.sync import EventQueue
+
         base_path = tmp_path / "sync"
         base_path.mkdir()
 
-        # Create local file
-        test_file = base_path / "same.txt"
-        test_file.write_text("Same content")
+        # Create file that's already tracked as NEW
+        test_file = base_path / "pending.txt"
+        test_file.write_text("Pending content")
+        sync_state.add_file("pending.txt", status=FileStatus.NEW)
 
-        # Track as modified
-        sync_state.add_file("same.txt", status=FileStatus.MODIFIED)
-        sync_state.update_file("same.txt", server_file_id=1, server_version=2)
+        mock_client.list_files.return_value = []
 
-        # Server file has same hash
-        import hashlib
-        content_hash = hashlib.sha256(b"Same content").hexdigest()
+        queue = EventQueue()
+        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        result = engine.scan()
 
-        server_file = MagicMock(spec=ServerFile)
-        server_file.path = "same.txt"
-        server_file.size = 12
-        server_file.version = 3
-        server_file.id = 1
-        server_file.content_hash = content_hash
+        assert "pending.txt" in result.uploaded
 
-        # Simulate conflict error but same hash
-        mock_client.chunk_exists.return_value = False
-        mock_client.update_file.side_effect = ConflictError("Version conflict")
-        mock_client.get_file.return_value = server_file
-        mock_client.get_file_chunks.return_value = ["chunk1"]
-
-        engine = SyncEngine(mock_client, sync_state, base_path, encryption_key)
-        result = engine.push_file("same.txt")
-
-        # Should auto-resolve (return result, not None)
-        assert result is not None
-        assert result.server_version == 3
-
-        # File should be marked synced, not conflict
-        local_file = sync_state.get_file("same.txt")
-        assert local_file is not None
-        assert local_file.status == FileStatus.SYNCED
-
-    def test_real_conflict_creates_copy(
+    def test_scan_respects_syncignore(
         self,
         tmp_path: Path,
         mock_client: MagicMock,
         sync_state: SyncState,
-        encryption_key: bytes,
     ) -> None:
-        """Should create conflict copy when content differs."""
-        from syncagent.core.crypto import encrypt_chunk
+        """Should ignore files matching .syncignore patterns."""
+        from syncagent.client.sync import EventQueue
 
         base_path = tmp_path / "sync"
         base_path.mkdir()
 
-        # Create local file
-        test_file = base_path / "different.txt"
-        test_file.write_text("Local content")
+        # Create .syncignore
+        (base_path / ".syncignore").write_text("*.log\n")
 
-        # Track as modified
-        sync_state.add_file("different.txt", status=FileStatus.MODIFIED)
-        sync_state.update_file("different.txt", server_file_id=1, server_version=2)
+        # Create files
+        (base_path / "good.txt").write_text("Keep me")
+        (base_path / "debug.log").write_text("Ignore me")
 
-        # Server file has different hash
-        server_file = MagicMock(spec=ServerFile)
-        server_file.path = "different.txt"
-        server_file.size = 14
-        server_file.version = 3
-        server_file.id = 1
-        server_file.content_hash = "different_hash_from_server"
+        mock_client.list_files.return_value = []
 
-        # Mock download for server version
-        encrypted = encrypt_chunk(b"Server content", encryption_key)
+        queue = EventQueue()
+        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        result = engine.scan()
 
-        mock_client.chunk_exists.return_value = False
-        mock_client.update_file.side_effect = ConflictError("Version conflict")
-        mock_client.get_file.return_value = server_file
-        mock_client.get_file_chunks.return_value = ["chunk1"]
-        mock_client.download_chunk.return_value = encrypted
-
-        # Track conflict callback
-        conflicts_received: list[ConflictInfo] = []
-
-        def on_conflict(info: ConflictInfo) -> None:
-            conflicts_received.append(info)
-
-        engine = SyncEngine(
-            mock_client, sync_state, base_path, encryption_key,
-            conflict_callback=on_conflict,
-        )
-        result = engine.push_file("different.txt")
-
-        # Should return None (conflict)
-        assert result is None
-
-        # Callback should have been called
-        assert len(conflicts_received) == 1
-        assert conflicts_received[0].original_path == "different.txt"
-        assert "conflict-" in conflicts_received[0].conflict_path
-
-        # Conflict file should exist
-        conflict_files = list(base_path.glob("*.conflict-*"))
-        assert len(conflict_files) == 1
-        assert conflict_files[0].read_text() == "Local content"
-
-        # Original file should have server content
-        assert test_file.read_text() == "Server content"
+        assert "good.txt" in result.uploaded
+        assert "debug.log" not in result.uploaded
 
 
 class TestConflictFilename:

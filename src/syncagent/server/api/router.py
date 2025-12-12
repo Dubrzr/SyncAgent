@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from syncagent.server.api import admin, chunks, files, health, machines, trash
+from syncagent.server.api import admin, changes, chunks, files, health, machines, trash
 
 router = APIRouter()
 
@@ -15,3 +15,4 @@ router.include_router(files.router)
 router.include_router(trash.router)
 router.include_router(chunks.router)
 router.include_router(admin.router)
+router.include_router(changes.router)

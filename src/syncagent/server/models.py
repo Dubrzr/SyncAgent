@@ -182,3 +182,41 @@ class Invitation(Base):
 
     # Indexes
     __table_args__ = (Index("idx_invitations_token", "token_hash"),)
+
+
+class ChangeLog(Base):
+    """Tracks changes to files for incremental sync.
+
+    Each entry represents a file operation (create, update, delete).
+    Clients can poll /api/changes?since=timestamp to get incremental updates
+    instead of fetching all files every sync.
+    """
+
+    __tablename__ = "change_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    file_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("files.id", ondelete="SET NULL"), nullable=True
+    )
+    # Denormalized path for deleted files (file_id may be NULL after deletion)
+    file_path: Mapped[str] = mapped_column(Text, nullable=False)
+    action: Mapped[str] = mapped_column(String(20), nullable=False)  # CREATED, UPDATED, DELETED
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    machine_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("machines.id"), nullable=False
+    )
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        nullable=False,
+    )
+
+    # Relationships
+    file: Mapped[FileMetadata | None] = relationship("FileMetadata")
+    machine: Mapped[Machine] = relationship("Machine")
+
+    # Indexes for efficient querying
+    __table_args__ = (
+        Index("idx_changelog_timestamp", "timestamp"),
+        Index("idx_changelog_file_path", "file_path"),
+    )

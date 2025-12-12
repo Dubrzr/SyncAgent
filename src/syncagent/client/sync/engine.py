@@ -1,60 +1,73 @@
-"""Sync engine for batch file synchronization.
+"""Change scanner for detecting local and remote changes.
 
 This module provides:
-- SyncEngine: Batch push/pull synchronization (scans for changes)
+- ChangeScanner: Scans local/remote for changes and pushes events to EventQueue
 
-Architecture Note:
-    For real-time event-driven sync, use:
-    - FileWatcher → EventQueue → SyncCoordinator → Workers
+Architecture:
+    ChangeScanner is an "event producer" that:
+    1. Scans local filesystem for new/modified/deleted files
+    2. Fetches remote changes via /api/changes (incremental) or list_files (fallback)
+    3. Pushes SyncEvent objects to EventQueue
 
-    SyncEngine is useful for:
-    - Initial sync (bootstrap)
-    - Manual "sync now" operations
-    - Batch operations without file watching
+    The actual sync work (upload/download/delete) is handled by:
+    - SyncCoordinator: Processes events from the queue
+    - Workers: Execute the transfers (UploadWorker, DownloadWorker, DeleteWorker)
+
+    Flow: ChangeScanner → EventQueue → SyncCoordinator → Workers
 """
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from syncagent.client.api import ConflictError, NotFoundError
 from syncagent.client.state import FileStatus
-from syncagent.client.sync.conflict import generate_conflict_filename, get_machine_name
-from syncagent.client.sync.download import FileDownloader
+from syncagent.client.sync.ignore import IgnorePatterns
 from syncagent.client.sync.types import (
-    ConflictCallback,
-    ConflictInfo,
-    DownloadResult,
-    ProgressCallback,
+    SyncEvent,
+    SyncEventSource,
+    SyncEventType,
     SyncResult,
-    UploadResult,
 )
-from syncagent.client.sync.upload import FileUploader
-from syncagent.core.crypto import compute_file_hash
 
 if TYPE_CHECKING:
-    from syncagent.client.api import ServerFile, SyncClient
+    from syncagent.client.api import SyncClient
     from syncagent.client.state import SyncState
+    from syncagent.client.sync.queue import EventQueue
 
 logger = logging.getLogger(__name__)
 
+# Epoch timestamp for first sync
+EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
-class SyncEngine:
-    """Coordinates file synchronization between local and server."""
+
+class ChangeScanner:
+    """Scans for local and remote changes and pushes events to the sync queue.
+
+    This class is responsible for:
+    - Scanning the local filesystem for changes
+    - Fetching remote changes from server (via /api/changes or list_files)
+    - Producing SyncEvent objects for the coordinator to process
+
+    Usage:
+        queue = EventQueue()
+        scanner = ChangeScanner(client, state, base_path, queue)
+
+        # Scan and push events (non-blocking)
+        result = scanner.scan()
+
+        # Events are now in the queue, ready for coordinator to process
+    """
 
     def __init__(
         self,
         client: SyncClient,
         state: SyncState,
         base_path: Path,
-        encryption_key: bytes,
-        progress_callback: ProgressCallback | None = None,
-        conflict_callback: ConflictCallback | None = None,
+        queue: EventQueue,
     ) -> None:
         """Initialize the sync engine.
 
@@ -62,275 +75,129 @@ class SyncEngine:
             client: HTTP client for server communication.
             state: Local state database.
             base_path: Base directory for synced files.
-            encryption_key: 32-byte AES key for encryption.
-            progress_callback: Optional callback for progress updates.
-            conflict_callback: Optional callback when conflicts are detected.
+            queue: Event queue to push events to.
         """
         self._client = client
         self._state = state
         self._base_path = Path(base_path).resolve()
-        self._key = encryption_key
-        self._progress_callback = progress_callback
-        self._conflict_callback = conflict_callback
-        # Pass state to uploader for resume capability
-        self._uploader = FileUploader(
-            client, encryption_key, progress_callback, state=state
-        )
-        self._downloader = FileDownloader(client, encryption_key, progress_callback)
-        self._machine_name = get_machine_name()
+        self._queue = queue
 
-    def sync(self) -> SyncResult:
-        """Perform a full sync operation.
+    def scan(self) -> SyncResult:
+        """Scan for changes and push events to the queue.
+
+        This method:
+        1. Scans local folder for new/modified/deleted files
+        2. Fetches server files and detects remote changes
+        3. Pushes SyncEvent objects to the queue
 
         Returns:
-            SyncResult with lists of uploaded, downloaded, deleted, and conflict files.
+            SyncResult with counts of events pushed (not completed transfers).
         """
-        uploaded: list[str] = []
-        downloaded: list[str] = []
-        deleted: list[str] = []
-        conflicts: list[str] = []
+        # Track events pushed
+        local_created: list[str] = []
+        local_modified: list[str] = []
+        local_deleted: list[str] = []
+        remote_created: list[str] = []
+        remote_modified: list[str] = []
+        remote_deleted: list[str] = []
         errors: list[str] = []
 
-        # 0. Scan local folder for new/modified/deleted files
-        self._scan_local_changes()
+        # 1. Scan local folder for changes
+        try:
+            local_changes = self._scan_local_changes()
+            local_created = local_changes["created"]
+            local_modified = local_changes["modified"]
+            local_deleted = local_changes["deleted"]
+        except Exception as e:
+            logger.error(f"Error scanning local changes: {e}")
+            errors.append(f"Local scan error: {e}")
 
-        # 1. Push local changes to server (including deletions)
-        push_result = self._push_changes()
-        uploaded.extend(push_result["uploaded"])
-        deleted.extend(push_result["deleted"])
-        conflicts.extend(push_result["conflicts"])
-        errors.extend(push_result["errors"])
+        # 2. Push local events to queue
+        for path in local_created:
+            event = SyncEvent.create(
+                event_type=SyncEventType.LOCAL_CREATED,
+                path=path,
+                source=SyncEventSource.LOCAL,
+            )
+            self._queue.put(event)
+            logger.debug(f"Queued LOCAL_CREATED: {path}")
 
-        # 2. Pull remote changes from server
-        pull_result = self._pull_changes()
-        downloaded.extend(pull_result["downloaded"])
-        errors.extend(pull_result["errors"])
+        for path in local_modified:
+            event = SyncEvent.create(
+                event_type=SyncEventType.LOCAL_MODIFIED,
+                path=path,
+                source=SyncEventSource.LOCAL,
+            )
+            self._queue.put(event)
+            logger.debug(f"Queued LOCAL_MODIFIED: {path}")
 
+        for path in local_deleted:
+            event = SyncEvent.create(
+                event_type=SyncEventType.LOCAL_DELETED,
+                path=path,
+                source=SyncEventSource.LOCAL,
+            )
+            self._queue.put(event)
+            logger.debug(f"Queued LOCAL_DELETED: {path}")
+
+        # 3. Scan remote for changes
+        try:
+            remote_changes = self._scan_remote_changes()
+            remote_created = remote_changes["created"]
+            remote_modified = remote_changes["modified"]
+            remote_deleted = remote_changes.get("deleted", [])
+        except Exception as e:
+            logger.error(f"Error scanning remote changes: {e}")
+            errors.append(f"Remote scan error: {e}")
+
+        # 4. Push remote events to queue
+        for path in remote_created:
+            event = SyncEvent.create(
+                event_type=SyncEventType.REMOTE_CREATED,
+                path=path,
+                source=SyncEventSource.REMOTE,
+            )
+            self._queue.put(event)
+            logger.debug(f"Queued REMOTE_CREATED: {path}")
+
+        for path in remote_modified:
+            event = SyncEvent.create(
+                event_type=SyncEventType.REMOTE_MODIFIED,
+                path=path,
+                source=SyncEventSource.REMOTE,
+            )
+            self._queue.put(event)
+            logger.debug(f"Queued REMOTE_MODIFIED: {path}")
+
+        for path in remote_deleted:
+            event = SyncEvent.create(
+                event_type=SyncEventType.REMOTE_DELETED,
+                path=path,
+                source=SyncEventSource.REMOTE,
+            )
+            self._queue.put(event)
+            logger.debug(f"Queued REMOTE_DELETED: {path}")
+
+        # Return summary of what was queued
         return SyncResult(
-            uploaded=uploaded,
-            downloaded=downloaded,
-            deleted=deleted,
-            conflicts=conflicts,
+            uploaded=local_created + local_modified,  # Will be uploaded
+            downloaded=remote_created + remote_modified,  # Will be downloaded
+            deleted=local_deleted,  # Will be deleted on server
+            conflicts=[],  # Conflicts detected by coordinator
             errors=errors,
         )
 
-    def push_file(self, relative_path: str) -> UploadResult | None:
-        """Push a single file to the server.
-
-        Args:
-            relative_path: Relative path of the file.
-
-        Returns:
-            UploadResult if successful, None if conflict.
-        """
-        local_path = self._base_path / relative_path
-        local_file = self._state.get_file(relative_path)
-
-        parent_version = None
-        server_file: ServerFile | None = None
-
-        if local_file and local_file.server_version:
-            parent_version = local_file.server_version
-            # Also fetch server file for conflict detection
-            with contextlib.suppress(NotFoundError):
-                server_file = self._client.get_file(relative_path)
-        else:
-            # Check if file exists on server (handles case where local state is out of sync)
-            try:
-                server_file = self._client.get_file(relative_path)
-                parent_version = server_file.version
-                logger.debug(f"File {relative_path} exists on server with version {parent_version}")
-            except NotFoundError:
-                # File truly doesn't exist on server, will be created
-                pass
-
-        try:
-            result = self._uploader.upload_file(
-                local_path=local_path,
-                relative_path=relative_path,
-                parent_version=parent_version,
-            )
-
-            # Update local state
-            if local_file:
-                self._state.mark_synced(
-                    relative_path,
-                    server_file_id=result.server_file_id,
-                    server_version=result.server_version,
-                    chunk_hashes=result.chunk_hashes,
-                )
-            else:
-                self._state.add_file(
-                    relative_path,
-                    local_mtime=local_path.stat().st_mtime,
-                    local_size=result.size,
-                    local_hash=result.content_hash,
-                    status=FileStatus.SYNCED,
-                )
-                self._state.mark_synced(
-                    relative_path,
-                    server_file_id=result.server_file_id,
-                    server_version=result.server_version,
-                    chunk_hashes=result.chunk_hashes,
-                )
-
-            return result
-
-        except ConflictError:
-            # Intelligent conflict detection
-            return self._handle_conflict(relative_path, local_path, server_file)
-
-    def _handle_conflict(
-        self,
-        relative_path: str,
-        local_path: Path,
-        server_file: ServerFile | None,
-    ) -> UploadResult | None:
-        """Handle a conflict with intelligent detection.
-
-        Checks if it's a real conflict or a false positive:
-        - Same hash on both sides → auto-resolve (no real conflict)
-        - Different content → create conflict copy
-
-        Args:
-            relative_path: Relative path of the file.
-            local_path: Absolute path to local file.
-            server_file: Server file metadata (may be None).
-
-        Returns:
-            UploadResult if auto-resolved, None if real conflict.
-        """
-        # Calculate local file hash
-        local_hash = compute_file_hash(local_path)
-
-        # Check if server has the same content (false conflict)
-        if server_file and server_file.content_hash == local_hash:
-            logger.info(
-                f"False conflict for {relative_path}: same content on both sides, auto-resolving"
-            )
-            # Just update local state to match server
-            self._state.mark_synced(
-                relative_path,
-                server_file_id=server_file.id,
-                server_version=server_file.version,
-                chunk_hashes=self._client.get_file_chunks(relative_path),
-            )
-            self._state.update_file(
-                relative_path,
-                local_mtime=local_path.stat().st_mtime,
-                local_size=local_path.stat().st_size,
-                local_hash=local_hash,
-            )
-            # Return a synthetic result indicating success
-            return UploadResult(
-                path=relative_path,
-                server_file_id=server_file.id,
-                server_version=server_file.version,
-                chunk_hashes=self._client.get_file_chunks(relative_path),
-                size=server_file.size,
-                content_hash=server_file.content_hash,
-            )
-
-        # Real conflict - create conflict copy
-        logger.warning(f"Real conflict detected for {relative_path}")
-        conflict_path = generate_conflict_filename(local_path, self._machine_name)
-
-        # Rename local file to conflict copy
-        try:
-            local_path.rename(conflict_path)
-            logger.info(f"Created conflict copy: {conflict_path.name}")
-        except OSError as e:
-            logger.error(f"Failed to create conflict copy: {e}")
-            self._state.mark_conflict(relative_path)
-            return None
-
-        # Download server version to original path
-        if server_file:
-            try:
-                self._downloader.download_file(server_file, local_path)
-                # Update state to match server
-                self._state.mark_synced(
-                    relative_path,
-                    server_file_id=server_file.id,
-                    server_version=server_file.version,
-                    chunk_hashes=self._client.get_file_chunks(relative_path),
-                )
-            except Exception as e:
-                logger.error(f"Failed to download server version: {e}")
-                # Restore local file
-                conflict_path.rename(local_path)
-                self._state.mark_conflict(relative_path)
-                return None
-
-        # Notify about conflict
-        conflict_info = ConflictInfo(
-            original_path=relative_path,
-            conflict_path=str(conflict_path.relative_to(self._base_path)),
-            local_hash=local_hash,
-            server_hash=server_file.content_hash if server_file else "",
-            machine_name=self._machine_name,
-            timestamp=datetime.now().isoformat(),
-        )
-
-        if self._conflict_callback:
-            self._conflict_callback(conflict_info)
-
-        self._state.mark_conflict(relative_path)
-        return None
-
-    def pull_file(self, server_file: ServerFile) -> DownloadResult:
-        """Pull a single file from the server.
-
-        Args:
-            server_file: File metadata from server.
-
-        Returns:
-            DownloadResult with local metadata.
-        """
-        local_path = self._base_path / server_file.path
-
-        result = self._downloader.download_file(
-            server_file=server_file,
-            local_path=local_path,
-        )
-
-        # Update local state
-        local_file = self._state.get_file(server_file.path)
-        if local_file:
-            self._state.mark_synced(
-                server_file.path,
-                server_file_id=server_file.id,
-                server_version=server_file.version,
-                chunk_hashes=self._client.get_file_chunks(server_file.path),
-            )
-        else:
-            self._state.add_file(
-                server_file.path,
-                local_mtime=local_path.stat().st_mtime,
-                local_size=server_file.size,
-                local_hash=server_file.content_hash,
-                status=FileStatus.SYNCED,
-            )
-            self._state.mark_synced(
-                server_file.path,
-                server_file_id=server_file.id,
-                server_version=server_file.version,
-                chunk_hashes=self._client.get_file_chunks(server_file.path),
-            )
-
-        return result
-
-    def _scan_local_changes(self) -> None:
+    def _scan_local_changes(self) -> dict[str, list[str]]:
         """Scan local folder for new, modified, or deleted files.
 
-        Walks the sync folder and compares with the state database to find:
-        - New files (not in state DB)
-        - Modified files (different mtime or size)
-        - Deleted files (in state DB but not on disk)
+        Returns:
+            Dict with 'created', 'modified', and 'deleted' path lists.
         """
-        from syncagent.client.sync.ignore import IgnorePatterns
+        created: list[str] = []
+        modified: list[str] = []
+        deleted: list[str] = []
 
-        # Use the same ignore patterns as the watcher
+        # Use ignore patterns
         ignore = IgnorePatterns()
         syncignore_path = self._base_path / ".syncignore"
         ignore.load_from_file(syncignore_path)
@@ -338,11 +205,11 @@ class SyncEngine:
         # Track files found on disk
         found_paths: set[str] = set()
 
-        # Note: os.walk with followlinks=False (default) doesn't follow symlinks to directories
+        # Walk the directory
         for root_str, dirs, files in os.walk(self._base_path):
             root = Path(root_str)
 
-            # Filter out ignored directories (including symlinks - SC-22)
+            # Filter out ignored directories (including symlinks)
             dirs[:] = [
                 d for d in dirs
                 if not ignore.should_ignore(root / d, self._base_path)
@@ -351,7 +218,7 @@ class SyncEngine:
             for filename in files:
                 file_path = root / filename
 
-                # Skip symlinks (SC-22) and ignored patterns
+                # Skip symlinks and ignored patterns
                 if file_path.is_symlink() or ignore.should_ignore(file_path, self._base_path):
                     continue
 
@@ -364,7 +231,7 @@ class SyncEngine:
                 stat = file_path.stat()
 
                 if local_file is None:
-                    # New file - add to state
+                    # New file
                     logger.debug(f"Found new local file: {relative_path}")
                     self._state.add_file(
                         relative_path,
@@ -373,6 +240,8 @@ class SyncEngine:
                         local_hash="",  # Will be computed on upload
                         status=FileStatus.NEW,
                     )
+                    created.append(relative_path)
+
                 elif local_file.status == FileStatus.SYNCED:
                     # Check if modified since last sync
                     local_mtime = local_file.local_mtime or 0.0
@@ -382,6 +251,14 @@ class SyncEngine:
                     ):
                         logger.debug(f"Found modified local file: {relative_path}")
                         self._state.mark_modified(relative_path)
+                        modified.append(relative_path)
+
+                elif local_file.status in (FileStatus.NEW, FileStatus.MODIFIED):
+                    # Already pending, add to list
+                    if local_file.status == FileStatus.NEW:
+                        created.append(relative_path)
+                    else:
+                        modified.append(relative_path)
 
         # Check for deleted files (in state DB but not on disk)
         synced_files = self._state.list_files(status=FileStatus.SYNCED)
@@ -390,71 +267,83 @@ class SyncEngine:
                 # File was deleted locally
                 logger.debug(f"Found deleted local file: {local_file.path}")
                 self._state.mark_deleted(local_file.path)
+                deleted.append(local_file.path)
 
-    def _push_changes(self) -> dict[str, list[str]]:
-        """Push local changes to server.
+        return {"created": created, "modified": modified, "deleted": deleted}
+
+    def _scan_remote_changes(self) -> dict[str, list[str]]:
+        """Scan remote server for new, modified, or deleted files.
+
+        Uses incremental sync via /api/changes when available.
+        Falls back to list_files for first sync or if incremental fails.
 
         Returns:
-            Dict with uploaded, deleted, conflicts, and errors lists.
+            Dict with 'created', 'modified', and 'deleted' path lists.
         """
-        uploaded: list[str] = []
+        created: list[str] = []
+        modified: list[str] = []
         deleted: list[str] = []
-        conflicts: list[str] = []
-        errors: list[str] = []
 
-        # Get files that need uploading
-        pending = self._state.get_pending_uploads()
-        modified = self._state.list_files(status=FileStatus.MODIFIED)
-        new_files = self._state.list_files(status=FileStatus.NEW)
+        # Get the last change cursor
+        cursor = self._state.get_last_change_cursor()
 
-        paths_to_push = set()
-        for p in pending:
-            paths_to_push.add(p.path)
-        for f in modified:
-            paths_to_push.add(f.path)
-        for f in new_files:
-            paths_to_push.add(f.path)
+        try:
+            # Try incremental sync via /api/changes
+            since = datetime.fromisoformat(cursor) if cursor else EPOCH
+            result = self._client.get_changes(since)
 
-        for path in paths_to_push:
-            try:
-                result = self.push_file(path)
-                if result:
-                    uploaded.append(path)
-                    self._state.remove_pending_upload(path)
-                else:
-                    conflicts.append(path)
-            except Exception as e:
-                logger.error(f"Failed to push {path}: {e}")
-                errors.append(f"{path}: {e}")
-                self._state.mark_upload_attempt(path, error=str(e))
+            for change in result.changes:
+                local_file = self._state.get_file(change.file_path)
 
-        # Process deletions
-        deleted_files = self._state.list_files(status=FileStatus.DELETED)
-        for local_file in deleted_files:
-            try:
-                self._client.delete_file(local_file.path)
-                self._state.remove_file(local_file.path)
-                deleted.append(local_file.path)
-                logger.info(f"Deleted {local_file.path} from server")
-            except NotFoundError:
-                # File already deleted on server, just clean up local state
-                self._state.remove_file(local_file.path)
-                deleted.append(local_file.path)
-                logger.debug(f"File {local_file.path} already deleted on server")
-            except Exception as e:
-                logger.error(f"Failed to delete {local_file.path}: {e}")
-                errors.append(f"{local_file.path}: {e}")
+                # Skip if local has unsynced changes
+                if local_file and local_file.status in (
+                    FileStatus.MODIFIED,
+                    FileStatus.NEW,
+                    FileStatus.CONFLICT,
+                ):
+                    logger.debug(
+                        f"Skipping remote {change.action} for {change.file_path}: local changes pending"
+                    )
+                    continue
 
-        return {"uploaded": uploaded, "deleted": deleted, "conflicts": conflicts, "errors": errors}
+                if change.action == "CREATED":
+                    if local_file is None:
+                        created.append(change.file_path)
+                elif change.action == "UPDATED":
+                    if local_file and local_file.server_version != change.version:
+                        modified.append(change.file_path)
+                    elif local_file is None:
+                        # File was updated but we don't have it locally
+                        created.append(change.file_path)
+                elif change.action == "DELETED":
+                    deleted.append(change.file_path)
 
-    def _pull_changes(self) -> dict[str, list[str]]:
-        """Pull remote changes from server.
+            # Update cursor if we got changes
+            if result.latest_timestamp:
+                self._state.set_last_change_cursor(result.latest_timestamp.isoformat())
+
+            logger.debug(
+                f"Incremental sync: {len(result.changes)} changes "
+                f"(created={len(created)}, modified={len(modified)}, deleted={len(deleted)})"
+            )
+
+        except Exception as e:
+            # Fall back to list_files if incremental sync fails
+            logger.warning(f"Incremental sync failed, falling back to full scan: {e}")
+            return self._scan_remote_changes_fallback()
+
+        return {"created": created, "modified": modified, "deleted": deleted}
+
+    def _scan_remote_changes_fallback(self) -> dict[str, list[str]]:
+        """Fallback to full file list for remote changes.
+
+        Used when incremental sync is not available or fails.
 
         Returns:
-            Dict with downloaded and errors lists.
+            Dict with 'created', 'modified', and 'deleted' path lists.
         """
-        downloaded: list[str] = []
-        errors: list[str] = []
+        created: list[str] = []
+        modified: list[str] = []
 
         # Get all server files
         server_files = self._client.list_files()
@@ -462,26 +351,28 @@ class SyncEngine:
         for server_file in server_files:
             local_file = self._state.get_file(server_file.path)
 
-            # Skip if local is already up to date
-            if local_file and local_file.server_version == server_file.version:
-                continue
+            if local_file is None:
+                # New file on server
+                created.append(server_file.path)
 
-            # Skip if local has unsynced changes
-            if local_file and local_file.status in (
-                FileStatus.MODIFIED,
-                FileStatus.NEW,
-                FileStatus.CONFLICT,
-            ):
-                logger.debug(
-                    f"Skipping pull for {server_file.path}: local changes pending"
-                )
-                continue
+            elif local_file.server_version != server_file.version:
+                # Skip if local has unsynced changes (will be handled as conflict by coordinator)
+                if local_file.status in (
+                    FileStatus.MODIFIED,
+                    FileStatus.NEW,
+                    FileStatus.CONFLICT,
+                ):
+                    logger.debug(
+                        f"Skipping remote change for {server_file.path}: local changes pending"
+                    )
+                    continue
 
-            try:
-                self.pull_file(server_file)
-                downloaded.append(server_file.path)
-            except Exception as e:
-                logger.error(f"Failed to pull {server_file.path}: {e}")
-                errors.append(f"{server_file.path}: {e}")
+                # Modified on server
+                modified.append(server_file.path)
 
-        return {"downloaded": downloaded, "errors": errors}
+        # Note: fallback doesn't detect remote deletions - need incremental for that
+        return {"created": created, "modified": modified, "deleted": []}
+
+
+# Backward compatibility alias
+SyncEngine = ChangeScanner

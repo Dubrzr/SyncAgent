@@ -1,24 +1,21 @@
 """Sync operations for file upload and download.
 
-This package provides two sync architectures:
-
-1. **Batch sync** (SyncEngine):
-   - Scans for changes and syncs them all at once
-   - Good for: initial sync, manual "sync now", batch operations
-
-2. **Event-driven sync** (Phase 15):
-   - Real-time sync with file watching
-   - Components: FileWatcher → EventQueue → SyncCoordinator → Workers
-   - Good for: continuous background sync
+Architecture:
+    ChangeScanner → EventQueue → SyncCoordinator → Workers
 
 Components:
+- **ChangeScanner**: Scans local/remote for changes, pushes events to queue
+  - Uses /api/changes for incremental remote sync (Phase 14.2)
+  - SyncEngine is a backward compatibility alias
+- **EventQueue**: Thread-safe priority queue for sync events
+- **SyncCoordinator**: Processes events, applies decision matrix, dispatches to workers
+- **Workers**: Execute transfers (UploadWorker, DownloadWorker, DeleteWorker)
+- **WorkerPool**: Concurrent worker management
+- **FileWatcher**: Watch directory for real-time changes
+
+Low-level transfer:
 - FileUploader / FileDownloader: Chunked transfer with encryption
-- SyncEngine: Batch push/pull synchronization
-- FileWatcher: Watch directory for changes with debouncing
-- EventQueue: Thread-safe priority queue for sync events
-- SyncCoordinator: Event-driven orchestrator with decision matrix
-- Workers (UploadWorker, DownloadWorker, DeleteWorker): Interruptible workers
-- WorkerPool: Concurrent worker management
+- Used by workers to perform actual file transfers
 
 All public symbols are re-exported here for backwards compatibility.
 """
@@ -32,7 +29,7 @@ from syncagent.client.sync.download import (
     DownloadCancelledError,
     FileDownloader,
 )
-from syncagent.client.sync.engine import SyncEngine
+from syncagent.client.sync.engine import ChangeScanner, SyncEngine
 from syncagent.client.sync.ignore import IgnorePatterns
 from syncagent.client.sync.queue import EventQueue
 from syncagent.client.sync.retry import (
@@ -115,9 +112,10 @@ __all__ = [
     "UploadCancelledError",
     "UploadResult",
     # Classes
+    "ChangeScanner",
     "FileDownloader",
     "FileUploader",
-    "SyncEngine",
+    "SyncEngine",  # Backward compatibility alias
     # Event Queue & Coordinator
     "EventQueue",
     "SyncCoordinator",

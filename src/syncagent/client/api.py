@@ -92,6 +92,39 @@ class ServerMachine:
         )
 
 
+@dataclass
+class ServerChange:
+    """Change log entry from server (for incremental sync)."""
+
+    id: int
+    file_path: str
+    action: str  # CREATED, UPDATED, DELETED
+    version: int
+    machine_id: int
+    timestamp: datetime
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ServerChange:
+        """Create from API response dictionary."""
+        return cls(
+            id=data["id"],
+            file_path=data["file_path"],
+            action=data["action"],
+            version=data["version"],
+            machine_id=data["machine_id"],
+            timestamp=datetime.fromisoformat(data["timestamp"]),
+        )
+
+
+@dataclass
+class ChangesResult:
+    """Result of get_changes API call."""
+
+    changes: list[ServerChange]
+    has_more: bool
+    latest_timestamp: datetime | None
+
+
 class SyncClient:
     """HTTP client for SyncAgent server API."""
 
@@ -377,3 +410,57 @@ class SyncClient:
             self._client.post(f"/api/trash/{path}/restore")
         )
         return ServerFile.from_dict(response.json())
+
+    # === Change log operations (incremental sync) ===
+
+    def get_changes(
+        self,
+        since: datetime,
+        limit: int = 1000,
+    ) -> ChangesResult:
+        """Get changes since a given timestamp.
+
+        This is used for incremental sync instead of list_files().
+        Clients should store the latest_timestamp from the response
+        and use it as 'since' for subsequent calls.
+
+        Args:
+            since: Get changes after this timestamp.
+            limit: Maximum number of changes to return.
+
+        Returns:
+            ChangesResult with list of changes and metadata.
+        """
+        response = self._handle_response(
+            self._client.get(
+                "/api/changes",
+                params={"since": since.isoformat(), "limit": str(limit)},
+            )
+        )
+        data = response.json()
+        return ChangesResult(
+            changes=[ServerChange.from_dict(c) for c in data["changes"]],
+            has_more=data["has_more"],
+            latest_timestamp=(
+                datetime.fromisoformat(data["latest_timestamp"])
+                if data["latest_timestamp"]
+                else None
+            ),
+        )
+
+    def get_latest_change_timestamp(self) -> datetime | None:
+        """Get the timestamp of the most recent change.
+
+        This can be used to quickly check if there are any changes
+        without fetching all the details.
+
+        Returns:
+            Timestamp of most recent change, or None if no changes exist.
+        """
+        response = self._handle_response(
+            self._client.get("/api/changes/latest")
+        )
+        data = response.json()
+        if data["latest_timestamp"]:
+            return datetime.fromisoformat(data["latest_timestamp"])
+        return None

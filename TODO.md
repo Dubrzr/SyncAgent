@@ -28,8 +28,8 @@
 | 11 | Trash Auto-Purge | Done |
 | 12 | Resume Sync | Done |
 | 13 | Integration Tests | Done |
-| 14 | Sync Optimizations | Pending |
-| 15 | Event-Driven Sync Architecture | In Progress (15.1, 15.2 done) |
+| 14 | Sync Optimizations | In Progress (14.2 done) |
+| 15 | Event-Driven Sync Architecture | In Progress (15.1, 15.2, 15.3 done) |
 
 ---
 
@@ -248,12 +248,15 @@
 - [ ] **Delta computation** : Calculer uniquement les blocs modifiés à transférer
 - [ ] **Réduction bande passante** : Ne transférer que les différences pour gros fichiers modifiés
 
-### 14.2 - Sync Incrémental Serveur
+### 14.2 - Sync Incrémental Serveur ✅
 
-- [ ] **Table `change_log`** : (file_id, action, timestamp, machine_id)
-- [ ] **API `/api/changes?since=timestamp`** : Retourne uniquement les changements depuis le dernier sync
-- [ ] **Cursor de synchronisation** : Chaque client garde son curseur de dernière sync
-- [ ] **Cleanup automatique** : Purge des entrées change_log anciennes (> 30 jours)
+- [x] **Table `change_log`** : (file_id, file_path, action, version, machine_id, timestamp)
+- [x] **API `/api/changes?since=timestamp`** : Retourne uniquement les changements depuis le dernier sync
+- [x] **API `/api/changes/latest`** : Retourne timestamp du dernier changement
+- [x] **Cursor de synchronisation** : Chaque client garde son curseur via `last_change_cursor` dans state
+- [x] **Alembic migration** : `f8226aa5b304_add_change_log_table.py`
+- [x] **ChangeScanner** : Renamed from SyncEngine, uses incremental API with fallback to list_files
+- [ ] **Cleanup automatique** : Purge des entrées change_log anciennes (> 30 jours) - scheduler
 
 ### Tests & Qualité
 
@@ -351,6 +354,11 @@
   - Support annulation mid-download
 - [x] **DeleteWorker** : Worker pour suppressions (local → remote, remote → local)
 - [x] **WorkerPool** : Pool de N workers concurrents (configurable)
+- [x] **ChangeScanner** : Renamed from SyncEngine (backward compat alias kept)
+  - Scans local filesystem for new/modified/deleted files
+  - Uses /api/changes for incremental remote sync (Phase 14.2)
+  - Pushes SyncEvent objects to EventQueue
+  - Actual sync work delegated to Workers via Coordinator
 - [x] **26 tests** : BaseWorker, UploadWorker, DownloadWorker, DeleteWorker, WorkerPool
 
 ### 15.4 - WebSocket Bidirectionnel
@@ -503,22 +511,27 @@ Discussion avec ChatGPT sur l'architecture optimale pour un système de synchron
 | Composant | État Actuel | Attendu (State of the Art) |
 |-----------|-------------|----------------------------|
 | **Watcher local** | ✅ watchdog + debouncing (250ms + 3s delay) | ✅ OK |
-| **Queue d'événements** | ❌ Pas de queue - traitement synchrone direct | File d'attente locale pour coordonner les actions |
-| **Coordinator/Orchestrateur** | ❌ SyncEngine fait push/pull séquentiellement | Coordinator central gérant les priorités et conflits |
+| **Queue d'événements** | ✅ EventQueue avec priorités et déduplication | ✅ OK |
+| **Coordinator/Orchestrateur** | ✅ SyncCoordinator avec matrice de décision | ✅ OK |
+| **Workers background** | ✅ Workers interruptibles (Upload, Download, Delete) + WorkerPool | ✅ OK |
+| **SyncEngine** | ✅ Event producer (scan → push events to queue) | ✅ OK |
 | **Notifications serveur (push)** | ❌ Pas de WebSocket - scan périodique uniquement | WebSocket pour notifications temps réel du serveur |
-| **Workers background** | ❌ Uploads/downloads bloquants dans le thread principal | Threads/tâches interruptibles contrôlés par le coordinator |
-| **Gestion mid-transfer** | ❌ Pas de gestion si fichier modifié pendant transfert | Pause/reprise automatique si fichier change en cours de transfert |
-| **Matrice de scénarios** | Partiel (hash identique = auto-resolve, sinon conflict copy) | Matrice complète de tous les cas possibles |
+| **Gestion mid-transfer** | ✅ Annulation via cancel_check() + coordination | ✅ OK |
+| **Matrice de scénarios** | ✅ Matrice complète dans Coordinator | ✅ OK |
 
-### Scénarios Non Couverts
+### Scénarios Maintenant Couverts (Phase 15)
 
-Les scénarios suivants ne sont pas explicitement gérés dans l'architecture actuelle :
+Les scénarios suivants sont maintenant gérés par le SyncCoordinator :
 
-1. **Fichier modifié localement pendant un download** - Le download écrase potentiellement la modification locale
-2. **Fichier modifié côté serveur pendant un upload** - Détecté comme conflit après coup, pas pendant
-3. **Modification simultanée des deux côtés** - Géré par conflit mais pas de notification temps réel
-4. **Upload/download interrompu par modification** - Pas de mécanisme pour stopper et relancer avec nouvelle version
-5. **Fichier supprimé d'un côté, modifié de l'autre** - Cas edge non documenté
+1. ✅ **Fichier modifié localement pendant un download** - Download annulé, upload priorisé
+2. ✅ **Fichier modifié côté serveur pendant un upload** - Marqué conflit potentiel
+3. ✅ **Upload/download interrompu par modification** - Workers interruptibles via cancel_check()
+4. ✅ **Fichier supprimé localement pendant un download** - Download annulé, delete propagé
+5. ✅ **Fichier supprimé côté serveur pendant un upload** - Conflict-copy créée, upload continue
+
+### Scénarios Non Couverts (Phase 15.4+)
+
+1. **Notifications temps réel serveur** - Pas encore de WebSocket (Phase 15.4)
 
 ### Référence State of the Art
 

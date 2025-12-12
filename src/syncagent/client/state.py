@@ -481,6 +481,20 @@ class SyncState:
         """Set last known server version."""
         self.set_state("last_server_version", str(version))
 
+    def get_last_change_cursor(self) -> str | None:
+        """Get the last change cursor timestamp (ISO format).
+
+        Used for incremental sync via /api/changes endpoint.
+        """
+        return self.get_state("last_change_cursor")
+
+    def set_last_change_cursor(self, timestamp: str) -> None:
+        """Set the last change cursor timestamp (ISO format).
+
+        Used for incremental sync via /api/changes endpoint.
+        """
+        self.set_state("last_change_cursor", timestamp)
+
     # === Upload Progress (Phase 12) ===
 
     def start_upload_progress(

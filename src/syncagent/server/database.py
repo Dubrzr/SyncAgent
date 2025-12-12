@@ -19,7 +19,16 @@ from typing import TYPE_CHECKING
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, joinedload
 
-from syncagent.server.models import Admin, Base, Chunk, FileMetadata, Invitation, Machine, Token
+from syncagent.server.models import (
+    Admin,
+    Base,
+    ChangeLog,
+    Chunk,
+    FileMetadata,
+    Invitation,
+    Machine,
+    Token,
+)
 from syncagent.server.models import Session as SessionModel
 
 if TYPE_CHECKING:
@@ -307,6 +316,18 @@ class Database:
                 updated_by=machine_id,
             )
             session.add(file)
+            session.flush()  # Get file.id before commit
+
+            # Log change
+            change = ChangeLog(
+                file_id=file.id,
+                file_path=path,
+                action="CREATED",
+                version=file.version,
+                machine_id=machine_id,
+            )
+            session.add(change)
+
             session.commit()
             session.refresh(file)
             session.expunge(file)
@@ -371,6 +392,16 @@ class Database:
             file.updated_at = datetime.now(UTC)
             file.updated_by = machine_id
 
+            # Log change
+            change = ChangeLog(
+                file_id=file.id,
+                file_path=path,
+                action="UPDATED",
+                version=file.version,
+                machine_id=machine_id,
+            )
+            session.add(change)
+
             session.commit()
             session.refresh(file)
             session.expunge(file)
@@ -408,6 +439,18 @@ class Database:
             if file:
                 file.deleted_at = datetime.now(UTC)
                 file.updated_by = machine_id
+                file.version += 1
+
+                # Log change
+                change = ChangeLog(
+                    file_id=file.id,
+                    file_path=path,
+                    action="DELETED",
+                    version=file.version,
+                    machine_id=machine_id,
+                )
+                session.add(change)
+
                 session.commit()
 
     def list_trash(self) -> list[FileMetadata]:
@@ -907,3 +950,66 @@ class Database:
                     "total_size": row.total_size,
                 }
             return stats
+
+    # === Change log operations ===
+
+    def get_changes_since(
+        self,
+        since: datetime,
+        limit: int = 1000,
+    ) -> list[ChangeLog]:
+        """Get changes since a given timestamp.
+
+        This is used for incremental sync - clients poll this endpoint
+        to get only the changes since their last sync.
+
+        Args:
+            since: Get changes after this timestamp.
+            limit: Maximum number of changes to return.
+
+        Returns:
+            List of ChangeLog entries ordered by timestamp.
+        """
+        with self._session() as session:
+            stmt = (
+                select(ChangeLog)
+                .where(ChangeLog.timestamp > since)
+                .order_by(ChangeLog.timestamp.asc())
+                .limit(limit)
+            )
+            changes = list(session.execute(stmt).scalars().all())
+            for change in changes:
+                session.expunge(change)
+            return changes
+
+    def get_latest_change_timestamp(self) -> datetime | None:
+        """Get the timestamp of the most recent change.
+
+        Returns:
+            Timestamp of most recent change, or None if no changes exist.
+        """
+        with self._session() as session:
+            from sqlalchemy import func
+
+            stmt = select(func.max(ChangeLog.timestamp))
+            result = session.execute(stmt).scalar()
+            return result
+
+    def cleanup_old_changes(self, older_than_days: int = 30) -> int:
+        """Delete old change log entries.
+
+        Args:
+            older_than_days: Delete entries older than this many days.
+
+        Returns:
+            Number of entries deleted.
+        """
+        cutoff = datetime.now(UTC) - timedelta(days=older_than_days)
+        with self._session() as session:
+            stmt = select(ChangeLog).where(ChangeLog.timestamp < cutoff)
+            changes = list(session.execute(stmt).scalars().all())
+            count = len(changes)
+            for change in changes:
+                session.delete(change)
+            session.commit()
+            return count
