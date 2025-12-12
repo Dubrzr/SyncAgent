@@ -27,6 +27,8 @@ if TYPE_CHECKING:
     from syncagent.client.api import SyncClient
     from syncagent.client.state import SyncState
 
+from syncagent.client.api import ConflictError
+
 logger = logging.getLogger(__name__)
 
 # Number of chunks between mid-transfer version checks (Phase 15.7)
@@ -188,13 +190,28 @@ class FileUploader:
 
         # Create or update file metadata
         if parent_version is None:
-            # New file
-            server_file = self._client.create_file(
-                path=relative_path,
-                size=size,
-                content_hash=content_hash,
-                chunks=chunk_hashes,
-            )
+            # New file - try create, fall back to update if already exists
+            try:
+                server_file = self._client.create_file(
+                    path=relative_path,
+                    size=size,
+                    content_hash=content_hash,
+                    chunks=chunk_hashes,
+                )
+            except ConflictError:
+                # File already exists on server - fetch current version and update
+                logger.info(
+                    f"File {relative_path} already exists on server, "
+                    "falling back to update"
+                )
+                existing = self._client.get_file(relative_path)
+                server_file = self._client.update_file(
+                    path=relative_path,
+                    size=size,
+                    content_hash=content_hash,
+                    parent_version=existing.version,
+                    chunks=chunk_hashes,
+                )
         else:
             # Update existing file
             server_file = self._client.update_file(

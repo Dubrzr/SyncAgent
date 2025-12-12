@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy.exc import IntegrityError
 
 from syncagent.server.api.deps import get_current_token, get_db
 from syncagent.server.database import ConflictError, Database
@@ -39,12 +40,18 @@ def create_file(
     auth: Token = Depends(get_current_token),
 ) -> FileResponse:
     """Create file metadata."""
-    file = db.create_file(
-        path=request.path,
-        size=request.size,
-        content_hash=request.content_hash,
-        machine_id=auth.machine_id,
-    )
+    try:
+        file = db.create_file(
+            path=request.path,
+            size=request.size,
+            content_hash=request.content_hash,
+            machine_id=auth.machine_id,
+        )
+    except IntegrityError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"File already exists: {request.path}",
+        ) from e
     if request.chunks:
         db.set_file_chunks(request.path, request.chunks)
     return file_to_response(file)
