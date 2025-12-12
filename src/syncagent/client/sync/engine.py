@@ -319,7 +319,7 @@ class SyncEngine:
         - Modified files (different mtime or size)
         - Deleted files (in state DB but not on disk)
         """
-        from syncagent.client.watcher import IgnorePatterns
+        from syncagent.client.sync.watcher import IgnorePatterns
 
         # Use the same ignore patterns as the watcher
         ignore = IgnorePatterns()

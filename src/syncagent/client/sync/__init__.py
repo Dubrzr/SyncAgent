@@ -4,6 +4,7 @@ This package provides:
 - FileUploader: Upload files with chunking and encryption
 - FileDownloader: Download files with decryption and assembly
 - SyncEngine: Coordinate push/pull synchronization
+- FileWatcher: Watch directory for changes with debouncing
 - Conflict detection and resolution utilities
 - Retry logic with network awareness
 
@@ -40,6 +41,12 @@ from syncagent.client.sync.types import (
     UploadResult,
 )
 from syncagent.client.sync.upload import FileUploader
+from syncagent.client.sync.watcher import (
+    ChangeType,
+    FileChange,
+    FileWatcher,
+    IgnorePatterns,
+)
 
 __all__ = [
     # Retry functions and constants
@@ -70,4 +77,9 @@ __all__ = [
     # Conflict utilities
     "generate_conflict_filename",
     "get_machine_name",
+    # Watcher
+    "ChangeType",
+    "FileChange",
+    "FileWatcher",
+    "IgnorePatterns",
 ]

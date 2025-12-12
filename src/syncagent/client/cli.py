@@ -289,6 +289,31 @@ def save_config(config: dict[str, str]) -> None:
     config_file.write_text(json.dumps(config, indent=2))
 
 
+def sanitize_machine_name(name: str) -> str:
+    """Sanitize machine name to be safe for filenames.
+
+    Only allows alphanumeric characters, hyphens, and underscores.
+    Other characters are replaced with underscores.
+
+    Args:
+        name: The machine name to sanitize.
+
+    Returns:
+        Safe machine name.
+    """
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in name)
+
+
+def get_registered_machine_name() -> str | None:
+    """Get the registered machine name from config.
+
+    Returns:
+        Machine name if registered, None otherwise.
+    """
+    config = load_config()
+    return config.get("machine_name")
+
+
 @cli.command()
 @click.option(
     "--server",
@@ -330,13 +355,23 @@ def register(server: str, token: str, name: str | None) -> None:
         if not click.confirm("Do you want to re-register with a new server?"):
             sys.exit(0)
 
-    # Determine machine name
-    default_name = socket.gethostname()
-    machine_name = name or click.prompt(
-        "Machine name",
-        default=default_name,
-        show_default=True,
-    )
+    # Determine machine name (sanitized for safe filenames)
+    default_name = sanitize_machine_name(socket.gethostname())
+    if name:
+        machine_name = sanitize_machine_name(name)
+        if machine_name != name:
+            click.echo(f"Note: Machine name sanitized to '{machine_name}'")
+    else:
+        machine_name = click.prompt(
+            "Machine name (alphanumeric, hyphens, underscores only)",
+            default=default_name,
+            show_default=True,
+        )
+        sanitized = sanitize_machine_name(machine_name)
+        if sanitized != machine_name:
+            click.echo(f"Note: Machine name sanitized to '{sanitized}'")
+            machine_name = sanitized
+
     machine_platform = platform.system().lower()
 
     click.echo(f"\nRegistering machine '{machine_name}' with server...")
@@ -650,7 +685,7 @@ def sync(watch: bool, no_progress: bool) -> None:
 
     if watch:
         # Continuous sync with file watching
-        from syncagent.client.watcher import FileChange, FileWatcher
+        from syncagent.client.sync.watcher import FileChange, FileWatcher
 
         click.echo("Watching for changes... (Ctrl+C to stop)\n")
 

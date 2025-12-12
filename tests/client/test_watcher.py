@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from syncagent.client.watcher import (
+from syncagent.client.sync.watcher import (
     ChangeType,
     FileChange,
     FileWatcher,
