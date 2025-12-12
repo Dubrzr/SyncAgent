@@ -306,7 +306,9 @@ def build_file_tree(files: "list[FileMetadata]") -> dict[str, Any]:
     root: dict[str, Any] = {"name": "", "type": "folder", "children": {}}
 
     for file in files:
-        parts = file.path.split("/")
+        # Normalize path separators (Windows uses \, Unix uses /)
+        normalized_path = file.path.replace("\\", "/")
+        parts = normalized_path.split("/")
         current = root
 
         # Navigate/create folders
