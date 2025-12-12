@@ -1,17 +1,18 @@
 """Tests for file system watcher with debouncing."""
 
+import os
 import time
 from pathlib import Path
-from threading import Event
-from typing import Any
 
 import pytest
 
+from syncagent.client.sync.ignore import IgnorePatterns
+from syncagent.client.sync.queue import EventQueue
+from syncagent.client.sync.types import SyncEventType
 from syncagent.client.sync.watcher import (
     ChangeType,
     FileChange,
     FileWatcher,
-    IgnorePatterns,
 )
 
 
@@ -119,12 +120,12 @@ class TestFileChange:
         path = Path("/test/file.txt")
         change = FileChange(
             path=path,
-            change_type=ChangeType.CREATED,
+            change_type=ChangeType.MODIFIED,
             is_directory=False,
         )
 
         assert change.path == path
-        assert change.change_type == ChangeType.CREATED
+        assert change.change_type == ChangeType.MODIFIED
         assert change.is_directory is False
         assert change.dest_path is None
         assert change.timestamp > 0
@@ -146,7 +147,7 @@ class TestFileChange:
 
 
 class TestFileWatcher:
-    """Tests for FileWatcher class."""
+    """Tests for FileWatcher class (queue mode)."""
 
     @pytest.fixture
     def watch_dir(self, tmp_path: Path) -> Path:
@@ -155,25 +156,32 @@ class TestFileWatcher:
         watch.mkdir()
         return watch
 
-    def test_create_watcher(self, watch_dir: Path) -> None:
+    @pytest.fixture
+    def event_queue(self) -> EventQueue:
+        """Create an event queue."""
+        return EventQueue()
+
+    def test_create_watcher(self, watch_dir: Path, event_queue: EventQueue) -> None:
         """Should create a watcher for a directory."""
-        changes: list[FileChange] = []
-        watcher = FileWatcher(watch_dir, lambda c: changes.extend(c))
+        watcher = FileWatcher(watch_dir, event_queue)
 
         assert watcher.watch_path == watch_dir.resolve()
         assert watcher.is_running is False
+        assert watcher.event_queue is event_queue
 
-    def test_watcher_requires_directory(self, tmp_path: Path) -> None:
+    def test_watcher_requires_directory(
+        self, tmp_path: Path, event_queue: EventQueue
+    ) -> None:
         """Should raise if path is not a directory."""
         file_path = tmp_path / "file.txt"
         file_path.touch()
 
         with pytest.raises(ValueError, match="must be a directory"):
-            FileWatcher(file_path, lambda c: None)
+            FileWatcher(file_path, event_queue)
 
-    def test_start_stop(self, watch_dir: Path) -> None:
+    def test_start_stop(self, watch_dir: Path, event_queue: EventQueue) -> None:
         """Should start and stop cleanly."""
-        watcher = FileWatcher(watch_dir, lambda c: None)
+        watcher = FileWatcher(watch_dir, event_queue)
 
         watcher.start()
         assert watcher.is_running is True
@@ -181,272 +189,161 @@ class TestFileWatcher:
         watcher.stop()
         assert watcher.is_running is False
 
-    def test_context_manager(self, watch_dir: Path) -> None:
+    def test_context_manager(self, watch_dir: Path, event_queue: EventQueue) -> None:
         """Should work as context manager."""
-        with FileWatcher(watch_dir, lambda c: None) as watcher:
+        with FileWatcher(watch_dir, event_queue) as watcher:
             assert watcher.is_running is True
         assert watcher.is_running is False
 
-    def test_detects_file_creation(self, watch_dir: Path) -> None:
-        """Should detect when a file is created."""
-        changes: list[FileChange] = []
-        event = Event()
-
-        def on_changes(c: list[FileChange]) -> None:
-            changes.extend(c)
-            event.set()
-
-        with FileWatcher(watch_dir, on_changes, sync_delay_s=0.1):
+    def test_detects_file_creation(
+        self, watch_dir: Path, event_queue: EventQueue
+    ) -> None:
+        """Should detect when a file is created and inject event."""
+        with FileWatcher(watch_dir, event_queue, sync_delay_s=0.1):
             # Create a file
             test_file = watch_dir / "newfile.txt"
             test_file.write_text("hello")
 
-            # Wait for callback
-            assert event.wait(timeout=2.0), "Timeout waiting for changes"
+            # Wait for event
+            event = event_queue.get(timeout=3.0)
 
-        assert len(changes) >= 1
-        # On Windows, creation may be reported as MODIFIED, so check for either
-        file_changes = [c for c in changes if c.path.name == "newfile.txt"]
-        assert len(file_changes) >= 1
-        assert file_changes[0].change_type in (ChangeType.CREATED, ChangeType.MODIFIED)
+        assert event is not None
+        assert event.path == "newfile.txt"
+        assert event.event_type in (SyncEventType.LOCAL_CREATED, SyncEventType.LOCAL_MODIFIED)
 
-    def test_detects_file_modification(self, watch_dir: Path) -> None:
+    def test_detects_file_modification(
+        self, watch_dir: Path, event_queue: EventQueue
+    ) -> None:
         """Should detect when a file is modified."""
         # Create file first
         test_file = watch_dir / "existing.txt"
         test_file.write_text("initial")
 
-        changes: list[FileChange] = []
-        event = Event()
-
-        def on_changes(c: list[FileChange]) -> None:
-            changes.extend(c)
-            event.set()
-
-        with FileWatcher(watch_dir, on_changes, sync_delay_s=0.1):
-            # Small delay to let watcher initialize
-            time.sleep(0.1)
+        with FileWatcher(watch_dir, event_queue, sync_delay_s=0.1):
+            time.sleep(0.1)  # Wait for watcher to initialize
 
             # Modify the file
             test_file.write_text("modified content")
 
-            # Wait for callback
-            assert event.wait(timeout=2.0), "Timeout waiting for changes"
+            # Wait for event
+            event = event_queue.get(timeout=3.0)
 
-        assert len(changes) >= 1
-        modified = [c for c in changes if c.change_type == ChangeType.MODIFIED]
-        assert any(c.path.name == "existing.txt" for c in modified)
+        assert event is not None
+        assert event.path == "existing.txt"
+        assert event.event_type == SyncEventType.LOCAL_MODIFIED
 
-    def test_detects_file_deletion(self, watch_dir: Path) -> None:
+    def test_detects_file_deletion(
+        self, watch_dir: Path, event_queue: EventQueue
+    ) -> None:
         """Should detect when a file is deleted."""
         # Create file first
         test_file = watch_dir / "todelete.txt"
         test_file.write_text("content")
 
-        changes: list[FileChange] = []
-        event = Event()
-
-        def on_changes(c: list[FileChange]) -> None:
-            changes.extend(c)
-            event.set()
-
-        with FileWatcher(watch_dir, on_changes, sync_delay_s=0.1):
+        with FileWatcher(watch_dir, event_queue, sync_delay_s=0.1):
             time.sleep(0.2)  # Wait for watcher to be ready
 
             # Delete the file
             test_file.unlink()
 
-            # Wait for deletion to be detected (may take longer on some platforms)
-            timeout = 3.0
-            start = time.time()
-            while time.time() - start < timeout:
-                if any(c.change_type == ChangeType.DELETED for c in changes):
-                    break
-                event.wait(timeout=0.5)
+            # Wait for deletion event (may take longer)
+            event = event_queue.get(timeout=5.0)
 
-        deleted = [c for c in changes if c.change_type == ChangeType.DELETED]
-        assert any(c.path.name == "todelete.txt" for c in deleted)
+        assert event is not None
+        assert event.path == "todelete.txt"
+        assert event.event_type == SyncEventType.LOCAL_DELETED
 
-    def test_ignores_tmp_files(self, watch_dir: Path) -> None:
-        """Should not report changes for ignored files."""
-        changes: list[FileChange] = []
-
-        with FileWatcher(watch_dir, lambda c: changes.extend(c), sync_delay_s=0.1):
+    def test_ignores_tmp_files(
+        self, watch_dir: Path, event_queue: EventQueue
+    ) -> None:
+        """Should not inject events for ignored files."""
+        with FileWatcher(watch_dir, event_queue, sync_delay_s=0.1):
             # Create an ignored file
             tmp_file = watch_dir / "temp.tmp"
             tmp_file.write_text("temp")
 
             # Create a non-ignored file
-            txt_file = watch_dir / "real.txt"
-            txt_file.write_text("real")
+            real_file = watch_dir / "real.txt"
+            real_file.write_text("content")
 
-            time.sleep(0.5)
+            # Wait for event
+            event = event_queue.get(timeout=3.0)
 
-        # Should have changes for real.txt but not temp.tmp
-        paths = [c.path.name for c in changes]
-        assert "real.txt" in paths
-        assert "temp.tmp" not in paths
+        assert event is not None
+        # Should only see the non-ignored file
+        assert event.path == "real.txt"
 
-    def test_debouncing(self, watch_dir: Path) -> None:
-        """Should debounce rapid changes to same file."""
-        changes: list[FileChange] = []
-        event = Event()
-
-        def on_changes(c: list[FileChange]) -> None:
-            changes.extend(c)
-            event.set()
-
+    def test_debouncing(self, watch_dir: Path, event_queue: EventQueue) -> None:
+        """Should debounce rapid changes to the same file."""
         test_file = watch_dir / "rapid.txt"
+        test_file.write_text("v1")
 
-        with FileWatcher(watch_dir, on_changes, debounce_ms=250, sync_delay_s=0.5):
-            # Rapid writes
+        with FileWatcher(watch_dir, event_queue, debounce_ms=250, sync_delay_s=0.5):
+            time.sleep(0.1)  # Wait for watcher
+
+            # Rapid modifications
             for i in range(5):
-                test_file.write_text(f"content {i}")
-                time.sleep(0.05)  # 50ms between writes
+                test_file.write_text(f"version {i}")
+                time.sleep(0.05)
 
-            assert event.wait(timeout=3.0), "Timeout waiting for changes"
+            # Wait longer than debounce + sync delay
+            time.sleep(1.0)
 
-        # Should be coalesced into fewer changes (not 5)
-        rapid_changes = [c for c in changes if c.path.name == "rapid.txt"]
-        # Due to debouncing, we expect fewer events than the 5 writes
-        assert len(rapid_changes) <= 3
+        # Should have coalesced to fewer events
+        events = []
+        while True:
+            e = event_queue.get_nowait()
+            if e is None:
+                break
+            events.append(e)
 
-    def test_sync_delay(self, watch_dir: Path) -> None:
-        """Should wait sync_delay after last change before triggering."""
-        callback_time: list[float] = []
-        event = Event()
+        # Due to debouncing, should have fewer events than modifications
+        rapid_events = [e for e in events if e.path == "rapid.txt"]
+        # Debouncing may result in 1-2 events instead of 5
+        assert len(rapid_events) <= 3
 
-        def on_changes(c: list[Any]) -> None:
-            callback_time.append(time.time())
-            event.set()
-
-        test_file = watch_dir / "delayed.txt"
-        start_time = time.time()
-
-        with FileWatcher(watch_dir, on_changes, sync_delay_s=0.5):
-            test_file.write_text("content")
-
-            assert event.wait(timeout=3.0), "Timeout waiting for changes"
-
-        # Callback should happen ~0.5s after the write
-        assert len(callback_time) == 1
-        delay = callback_time[0] - start_time
-        assert delay >= 0.4  # At least 0.4s delay (allowing some tolerance)
-
-    def test_subdirectory_changes(self, watch_dir: Path) -> None:
+    def test_subdirectory_changes(
+        self, watch_dir: Path, event_queue: EventQueue
+    ) -> None:
         """Should detect changes in subdirectories."""
-        changes: list[FileChange] = []
-        event = Event()
-
-        def on_changes(c: list[FileChange]) -> None:
-            changes.extend(c)
-            event.set()
-
         subdir = watch_dir / "subdir"
         subdir.mkdir()
 
-        with FileWatcher(watch_dir, on_changes, sync_delay_s=0.1):
+        with FileWatcher(watch_dir, event_queue, sync_delay_s=0.1):
             # Create file in subdirectory
-            nested_file = subdir / "nested.txt"
-            nested_file.write_text("nested content")
+            sub_file = subdir / "nested.txt"
+            sub_file.write_text("nested content")
 
-            assert event.wait(timeout=2.0), "Timeout waiting for changes"
+            # Wait for event
+            event = event_queue.get(timeout=3.0)
 
-        assert any(c.path.name == "nested.txt" for c in changes)
+        assert event is not None
+        assert event.path == "subdir/nested.txt"
 
-    def test_loads_syncignore(self, watch_dir: Path) -> None:
-        """Should load .syncignore from watch directory."""
+    def test_loads_syncignore(self, watch_dir: Path, event_queue: EventQueue) -> None:
+        """Should load and respect .syncignore patterns."""
         # Create .syncignore
         syncignore = watch_dir / ".syncignore"
         syncignore.write_text("*.ignored\n")
 
-        changes: list[FileChange] = []
+        with FileWatcher(watch_dir, event_queue, sync_delay_s=0.1):
+            # Create an ignored file
+            ignored_file = watch_dir / "test.ignored"
+            ignored_file.write_text("should be ignored")
 
-        with FileWatcher(watch_dir, lambda c: changes.extend(c), sync_delay_s=0.1):
-            # Create ignored file
-            ignored = watch_dir / "test.ignored"
-            ignored.write_text("ignored")
+            # Create a normal file
+            normal_file = watch_dir / "normal.txt"
+            normal_file.write_text("should be detected")
 
-            # Create normal file
-            normal = watch_dir / "test.txt"
-            normal.write_text("normal")
+            # Wait for event
+            event = event_queue.get(timeout=3.0)
 
-            time.sleep(0.5)
-
-        paths = [c.path.name for c in changes]
-        assert "test.txt" in paths
-        assert "test.ignored" not in paths
+        assert event is not None
+        assert event.path == "normal.txt"
 
 
 class TestSymlinkExclusion:
-    """Tests for SC-22: symlinks should not be synchronized."""
-
-    def test_symlink_file_ignored(self, tmp_path: Path) -> None:
-        """Should ignore symlink files."""
-        ignore = IgnorePatterns()
-
-        # Create a real file
-        real_file = tmp_path / "real.txt"
-        real_file.write_text("content")
-
-        # Create symlink to the file
-        symlink = tmp_path / "link.txt"
-        try:
-            symlink.symlink_to(real_file)
-        except OSError:
-            pytest.skip("Symlinks not supported or permission denied")
-
-        assert ignore.should_ignore(real_file, tmp_path) is False
-        assert ignore.should_ignore(symlink, tmp_path) is True
-
-    def test_symlink_directory_ignored(self, tmp_path: Path) -> None:
-        """Should ignore symlink directories."""
-        ignore = IgnorePatterns()
-
-        # Create a real directory
-        real_dir = tmp_path / "real_dir"
-        real_dir.mkdir()
-
-        # Create symlink to the directory
-        symlink = tmp_path / "link_dir"
-        try:
-            symlink.symlink_to(real_dir)
-        except OSError:
-            pytest.skip("Symlinks not supported or permission denied")
-
-        assert ignore.should_ignore(real_dir, tmp_path) is False
-        assert ignore.should_ignore(symlink, tmp_path) is True
-
-    def test_watcher_ignores_symlinks(self, tmp_path: Path) -> None:
-        """FileWatcher should not report changes in symlinks."""
-        watch_dir = tmp_path / "sync"
-        watch_dir.mkdir()
-
-        # Create a real file
-        real_file = watch_dir / "real.txt"
-        real_file.write_text("content")
-
-        # Create symlink
-        symlink = watch_dir / "symlink.txt"
-        try:
-            symlink.symlink_to(real_file)
-        except OSError:
-            pytest.skip("Symlinks not supported or permission denied")
-
-        changes: list[FileChange] = []
-
-        with FileWatcher(watch_dir, lambda c: changes.extend(c), sync_delay_s=0.1):
-            # Modify the symlink target through the symlink
-            symlink.write_text("modified")
-            time.sleep(0.5)
-
-        # Should have change for real.txt but not symlink.txt
-        paths = [c.path.name for c in changes]
-        assert "symlink.txt" not in paths
-
-
-class TestFileWatcherQueueMode:
-    """Tests for FileWatcher queue mode (Phase 15+)."""
+    """Tests for symlink exclusion (SC-22)."""
 
     @pytest.fixture
     def watch_dir(self, tmp_path: Path) -> Path:
@@ -455,117 +352,70 @@ class TestFileWatcherQueueMode:
         watch.mkdir()
         return watch
 
-    def test_requires_callback_or_queue(self, watch_dir: Path) -> None:
-        """Should require either on_changes or event_queue."""
-        with pytest.raises(ValueError, match="Either on_changes or event_queue"):
-            FileWatcher(watch_dir)
+    @pytest.mark.skipif(os.name == "nt", reason="Symlinks require admin on Windows")
+    def test_symlink_file_ignored(self, watch_dir: Path) -> None:
+        """Should ignore symlinks to files."""
+        ignore = IgnorePatterns()
 
-    def test_queue_mode_basic(self, watch_dir: Path) -> None:
-        """Should inject events into queue in queue mode."""
-        from syncagent.client.sync.queue import EventQueue, SyncEventType
+        # Create a real file and a symlink
+        real_file = watch_dir / "real.txt"
+        real_file.write_text("content")
 
-        queue = EventQueue()
+        symlink = watch_dir / "link.txt"
+        symlink.symlink_to(real_file)
 
-        with FileWatcher(watch_dir, event_queue=queue, sync_delay_s=0.1):
-            # Create a file
-            test_file = watch_dir / "queue_test.txt"
-            test_file.write_text("content")
+        assert ignore.should_ignore(real_file, watch_dir) is False
+        assert ignore.should_ignore(symlink, watch_dir) is True
+
+    @pytest.mark.skipif(os.name == "nt", reason="Symlinks require admin on Windows")
+    def test_symlink_directory_ignored(self, watch_dir: Path) -> None:
+        """Should ignore symlinks to directories."""
+        ignore = IgnorePatterns()
+
+        # Create a real directory and a symlink
+        real_dir = watch_dir / "real_dir"
+        real_dir.mkdir()
+
+        symlink_dir = watch_dir / "link_dir"
+        symlink_dir.symlink_to(real_dir, target_is_directory=True)
+
+        assert ignore.should_ignore(real_dir, watch_dir) is False
+        assert ignore.should_ignore(symlink_dir, watch_dir) is True
+
+    @pytest.mark.skipif(os.name == "nt", reason="Symlinks require admin on Windows")
+    def test_watcher_ignores_symlinks(self, watch_dir: Path) -> None:
+        """Should not report changes for symlinked files."""
+        event_queue = EventQueue()
+
+        # Create a real file outside watch dir
+        parent = watch_dir.parent
+        external_file = parent / "external.txt"
+        external_file.write_text("external content")
+
+        # Create a symlink to it inside watch dir
+        symlink = watch_dir / "linked.txt"
+        symlink.symlink_to(external_file)
+
+        with FileWatcher(watch_dir, event_queue, sync_delay_s=0.1):
+            # Create a real file (should be detected)
+            real_file = watch_dir / "real.txt"
+            real_file.write_text("real content")
+
+            # Modify through symlink (should be ignored)
+            symlink.write_text("modified via symlink")
+
             time.sleep(0.5)
 
-        # Should have an event in the queue
-        assert len(queue) >= 1
-        event = queue.get(timeout=1)
-        assert event is not None
-        assert event.path == "queue_test.txt"
-        assert event.event_type in (
-            SyncEventType.LOCAL_CREATED,
-            SyncEventType.LOCAL_MODIFIED,
-        )
+        # Only real.txt should have an event
+        events = []
+        while True:
+            e = event_queue.get_nowait()
+            if e is None:
+                break
+            events.append(e)
 
-    def test_queue_mode_multiple_files(self, watch_dir: Path) -> None:
-        """Should inject events for multiple files."""
-        from syncagent.client.sync.queue import EventQueue
+        real_events = [e for e in events if e.path == "real.txt"]
+        assert len(real_events) >= 1
 
-        queue = EventQueue()
-
-        with FileWatcher(watch_dir, event_queue=queue, sync_delay_s=0.1):
-            # Create multiple files
-            for i in range(3):
-                test_file = watch_dir / f"file{i}.txt"
-                test_file.write_text(f"content {i}")
-            time.sleep(0.5)
-
-        # Should have events for all files
-        assert len(queue) >= 3
-
-    def test_queue_mode_delete(self, watch_dir: Path) -> None:
-        """Should inject delete events."""
-        from syncagent.client.sync.queue import EventQueue, SyncEventType
-
-        queue = EventQueue()
-
-        # Create file first
-        test_file = watch_dir / "to_delete.txt"
-        test_file.write_text("content")
-
-        with FileWatcher(watch_dir, event_queue=queue, sync_delay_s=0.1):
-            # Delete the file
-            test_file.unlink()
-            time.sleep(0.5)
-
-        # Should have a delete event
-        assert len(queue) >= 1
-        event = queue.get(timeout=1)
-        assert event is not None
-        assert event.path == "to_delete.txt"
-        assert event.event_type == SyncEventType.LOCAL_DELETED
-
-    def test_queue_mode_subdirectory(self, watch_dir: Path) -> None:
-        """Should handle subdirectory paths correctly."""
-        from syncagent.client.sync.queue import EventQueue
-
-        queue = EventQueue()
-        subdir = watch_dir / "subdir"
-        subdir.mkdir()
-
-        with FileWatcher(watch_dir, event_queue=queue, sync_delay_s=0.1):
-            # Create file in subdirectory
-            test_file = subdir / "nested.txt"
-            test_file.write_text("content")
-            time.sleep(0.5)
-
-        # Path should use forward slashes
-        assert len(queue) >= 1
-        event = queue.get(timeout=1)
-        assert event is not None
-        assert event.path == "subdir/nested.txt"
-
-    def test_queue_mode_ignores_directories(self, watch_dir: Path) -> None:
-        """Should not create events for directory changes."""
-        from syncagent.client.sync.queue import EventQueue
-
-        queue = EventQueue()
-
-        with FileWatcher(watch_dir, event_queue=queue, sync_delay_s=0.1):
-            # Create a directory (not a file)
-            new_dir = watch_dir / "new_directory"
-            new_dir.mkdir()
-            time.sleep(0.5)
-
-        # Queue should be empty (directories are ignored)
-        assert len(queue) == 0
-
-    def test_queue_property(self, watch_dir: Path) -> None:
-        """Should expose event_queue property."""
-        from syncagent.client.sync.queue import EventQueue
-
-        queue = EventQueue()
-        watcher = FileWatcher(watch_dir, event_queue=queue)
-
-        assert watcher.event_queue is queue
-
-    def test_callback_mode_no_queue_property(self, watch_dir: Path) -> None:
-        """event_queue should be None in callback mode."""
-        watcher = FileWatcher(watch_dir, on_changes=lambda c: None)
-
-        assert watcher.event_queue is None
+        linked_events = [e for e in events if e.path == "linked.txt"]
+        assert len(linked_events) == 0

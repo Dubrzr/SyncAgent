@@ -16,16 +16,10 @@ from syncagent.client.sync.conflict import (
     generate_conflict_filename,
     get_machine_name,
 )
-from syncagent.client.sync.coordinator import (
-    CoordinatorState,
-    CoordinatorStats,
-    SyncCoordinator,
-    TransferState,
-    TransferStatus,
-    TransferType,
-)
+from syncagent.client.sync.coordinator import SyncCoordinator
 from syncagent.client.sync.download import FileDownloader
 from syncagent.client.sync.engine import SyncEngine
+from syncagent.client.sync.ignore import IgnorePatterns
 from syncagent.client.sync.queue import EventQueue
 from syncagent.client.sync.retry import (
     DEFAULT_BACKOFF_MULTIPLIER,
@@ -41,6 +35,8 @@ from syncagent.client.sync.retry import (
 from syncagent.client.sync.types import (
     ConflictCallback,
     ConflictInfo,
+    CoordinatorState,
+    CoordinatorStats,
     DownloadError,
     DownloadResult,
     ProgressCallback,
@@ -50,6 +46,9 @@ from syncagent.client.sync.types import (
     SyncEventType,
     SyncProgress,
     SyncResult,
+    TransferState,
+    TransferStatus,
+    TransferType,
     UploadError,
     UploadResult,
 )
@@ -58,7 +57,6 @@ from syncagent.client.sync.watcher import (
     ChangeType,
     FileChange,
     FileWatcher,
-    IgnorePatterns,
 )
 
 __all__ = [

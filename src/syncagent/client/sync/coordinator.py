@@ -2,7 +2,6 @@
 
 This module provides:
 - SyncCoordinator: Central orchestrator that processes events and dispatches work
-- TransferState: Tracks in-progress transfers
 - Decision matrix for handling concurrent events
 
 The coordinator is the "brain" of the sync system:
@@ -26,15 +25,17 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
-from dataclasses import dataclass, field
-from enum import Enum, auto
 from typing import TYPE_CHECKING, Protocol
 
 from syncagent.client.sync.types import (
+    CoordinatorState,
+    CoordinatorStats,
     SyncEvent,
     SyncEventSource,
     SyncEventType,
+    TransferState,
+    TransferStatus,
+    TransferType,
 )
 
 if TYPE_CHECKING:
@@ -43,52 +44,6 @@ if TYPE_CHECKING:
     from syncagent.client.sync.queue import EventQueue
 
 logger = logging.getLogger(__name__)
-
-
-class TransferType(Enum):
-    """Type of transfer operation."""
-
-    UPLOAD = auto()
-    DOWNLOAD = auto()
-    DELETE = auto()
-
-
-class TransferStatus(Enum):
-    """Status of a transfer operation."""
-
-    PENDING = auto()
-    IN_PROGRESS = auto()
-    COMPLETED = auto()
-    CANCELLED = auto()
-    FAILED = auto()
-
-
-@dataclass
-class TransferState:
-    """Tracks the state of an in-progress transfer.
-
-    Attributes:
-        path: Relative file path
-        transfer_type: Type of operation (upload/download/delete)
-        status: Current status
-        event: The event that triggered this transfer
-        started_at: When the transfer started
-        cancel_requested: Flag to request cancellation
-        error: Error message if failed
-    """
-
-    path: str
-    transfer_type: TransferType
-    status: TransferStatus
-    event: SyncEvent
-    started_at: float = field(default_factory=time.time)
-    cancel_requested: bool = False
-    error: str | None = None
-
-    def request_cancel(self) -> None:
-        """Request cancellation of this transfer."""
-        self.cancel_requested = True
-        logger.info("Cancellation requested for %s %s", self.transfer_type.name, self.path)
 
 
 class WorkerProtocol(Protocol):
@@ -114,27 +69,6 @@ class WorkerProtocol(Protocol):
             True if successful, False otherwise
         """
         ...
-
-
-class CoordinatorState(Enum):
-    """State of the coordinator."""
-
-    STOPPED = auto()
-    RUNNING = auto()
-    STOPPING = auto()
-
-
-@dataclass
-class CoordinatorStats:
-    """Statistics for the coordinator."""
-
-    events_processed: int = 0
-    uploads_completed: int = 0
-    downloads_completed: int = 0
-    deletes_completed: int = 0
-    transfers_cancelled: int = 0
-    conflicts_detected: int = 0
-    errors: int = 0
 
 
 class SyncCoordinator:

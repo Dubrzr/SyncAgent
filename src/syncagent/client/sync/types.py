@@ -7,6 +7,8 @@ This module provides:
 - SyncResult: Overall sync operation result
 - ConflictInfo: Conflict detection information
 - SyncEventType, SyncEventSource, SyncEvent: Event queue types
+- TransferType, TransferStatus, TransferState: Coordinator types
+- CoordinatorState, CoordinatorStats: Coordinator state
 - Type aliases for callbacks
 """
 
@@ -213,3 +215,74 @@ class SyncEvent:
             f"path={self.path!r}, "
             f"source={self.source.name})"
         )
+
+
+# =============================================================================
+# Coordinator Types
+# =============================================================================
+
+
+class TransferType(IntEnum):
+    """Type of transfer operation."""
+
+    UPLOAD = auto()
+    DOWNLOAD = auto()
+    DELETE = auto()
+
+
+class TransferStatus(IntEnum):
+    """Status of a transfer operation."""
+
+    PENDING = auto()
+    IN_PROGRESS = auto()
+    COMPLETED = auto()
+    CANCELLED = auto()
+    FAILED = auto()
+
+
+class CoordinatorState(IntEnum):
+    """State of the coordinator."""
+
+    STOPPED = auto()
+    RUNNING = auto()
+    STOPPING = auto()
+
+
+@dataclass
+class TransferState:
+    """Tracks the state of an in-progress transfer.
+
+    Attributes:
+        path: Relative file path
+        transfer_type: Type of operation (upload/download/delete)
+        status: Current status
+        event: The event that triggered this transfer
+        started_at: When the transfer started
+        cancel_requested: Flag to request cancellation
+        error: Error message if failed
+    """
+
+    path: str
+    transfer_type: TransferType
+    status: TransferStatus
+    event: SyncEvent
+    started_at: float = field(default_factory=time.time)
+    cancel_requested: bool = False
+    error: str | None = None
+
+    def request_cancel(self) -> None:
+        """Request cancellation of this transfer."""
+        self.cancel_requested = True
+
+
+@dataclass
+class CoordinatorStats:
+    """Statistics for the coordinator."""
+
+    events_processed: int = 0
+    uploads_completed: int = 0
+    downloads_completed: int = 0
+    deletes_completed: int = 0
+    transfers_cancelled: int = 0
+    conflicts_detected: int = 0
+    errors: int = 0
