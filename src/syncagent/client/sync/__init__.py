@@ -1,16 +1,24 @@
 """Sync operations for file upload and download.
 
-This package provides:
-- FileUploader: Upload files with chunking and encryption
-- FileDownloader: Download files with decryption and assembly
-- SyncEngine: Coordinate push/pull synchronization
+This package provides two sync architectures:
+
+1. **Batch sync** (SyncEngine):
+   - Scans for changes and syncs them all at once
+   - Good for: initial sync, manual "sync now", batch operations
+
+2. **Event-driven sync** (Phase 15):
+   - Real-time sync with file watching
+   - Components: FileWatcher → EventQueue → SyncCoordinator → Workers
+   - Good for: continuous background sync
+
+Components:
+- FileUploader / FileDownloader: Chunked transfer with encryption
+- SyncEngine: Batch push/pull synchronization
 - FileWatcher: Watch directory for changes with debouncing
 - EventQueue: Thread-safe priority queue for sync events
-- SyncCoordinator: Event-driven sync orchestrator
-- Workers: Interruptible upload/download/delete workers
+- SyncCoordinator: Event-driven orchestrator with decision matrix
+- Workers (UploadWorker, DownloadWorker, DeleteWorker): Interruptible workers
 - WorkerPool: Concurrent worker management
-- Conflict detection and resolution utilities
-- Retry logic with network awareness
 
 All public symbols are re-exported here for backwards compatibility.
 """

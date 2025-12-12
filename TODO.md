@@ -337,19 +337,21 @@
 - [x] **Transfer tracking** : Suivi des transferts en cours (path → worker)
 - [x] **50 tests** : EventQueue (29) + Coordinator (21)
 
-### 15.3 - Workers Interruptibles
+### 15.3 - Workers Interruptibles ✅
 
-- [ ] **BaseWorker class** : Worker de base avec support annulation
-  - Threading ou asyncio
-  - Méthode `cancel()` pour arrêt propre
-  - Callback `on_complete`, `on_error`, `on_cancelled`
-- [ ] **UploadWorker** : Refactor de FileUploader en worker
-  - Vérifie régulièrement le flag cancelled
-  - Peut reprendre (chunk-level resume existant)
-- [ ] **DownloadWorker** : Refactor de FileDownloader en worker
+- [x] **BaseWorker class** : Worker de base avec support annulation
+  - Threading avec `cancel()` pour arrêt propre
+  - Callbacks `on_complete`, `on_error`, `on_cancelled`
+  - WorkerState (IDLE, RUNNING, COMPLETED, CANCELLED, FAILED)
+- [x] **UploadWorker** : Wrapper de FileUploader en worker
+  - Vérifie cancel_check() entre chaque chunk
+  - Support resume existant via SyncState
+- [x] **DownloadWorker** : Wrapper de FileDownloader en worker
   - Écriture atomique (.tmp → rename) existante
   - Support annulation mid-download
-- [ ] **Worker Pool** : Pool de N workers concurrents (configurable)
+- [x] **DeleteWorker** : Worker pour suppressions (local → remote, remote → local)
+- [x] **WorkerPool** : Pool de N workers concurrents (configurable)
+- [x] **26 tests** : BaseWorker, UploadWorker, DownloadWorker, DeleteWorker, WorkerPool
 
 ### 15.4 - WebSocket Bidirectionnel
 

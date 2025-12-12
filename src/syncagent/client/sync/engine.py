@@ -1,7 +1,16 @@
-"""Sync engine coordinating file synchronization.
+"""Sync engine for batch file synchronization.
 
 This module provides:
-- SyncEngine: Coordinates push/pull synchronization between local and server
+- SyncEngine: Batch push/pull synchronization (scans for changes)
+
+Architecture Note:
+    For real-time event-driven sync, use:
+    - FileWatcher → EventQueue → SyncCoordinator → Workers
+
+    SyncEngine is useful for:
+    - Initial sync (bootstrap)
+    - Manual "sync now" operations
+    - Batch operations without file watching
 """
 
 from __future__ import annotations

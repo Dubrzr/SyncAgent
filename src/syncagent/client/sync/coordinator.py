@@ -387,7 +387,8 @@ class SyncCoordinator:
             event.path,
         )
 
-        # Execute in current thread (for now - Phase 15.3 will add worker pool)
+        # Execute synchronously in coordinator thread
+        # For concurrent execution, use WorkerPool directly instead
         try:
             success = worker.execute(
                 event=event,
