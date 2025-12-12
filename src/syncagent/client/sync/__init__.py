@@ -16,6 +16,14 @@ from syncagent.client.sync.conflict import (
     generate_conflict_filename,
     get_machine_name,
 )
+from syncagent.client.sync.coordinator import (
+    CoordinatorState,
+    CoordinatorStats,
+    SyncCoordinator,
+    TransferState,
+    TransferStatus,
+    TransferType,
+)
 from syncagent.client.sync.download import FileDownloader
 from syncagent.client.sync.engine import SyncEngine
 from syncagent.client.sync.queue import EventQueue
@@ -82,8 +90,14 @@ __all__ = [
     "FileDownloader",
     "FileUploader",
     "SyncEngine",
-    # Event Queue
+    # Event Queue & Coordinator
     "EventQueue",
+    "SyncCoordinator",
+    "CoordinatorState",
+    "CoordinatorStats",
+    "TransferState",
+    "TransferStatus",
+    "TransferType",
     # Conflict utilities
     "generate_conflict_filename",
     "get_machine_name",
