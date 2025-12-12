@@ -5,6 +5,7 @@ This package provides:
 - FileDownloader: Download files with decryption and assembly
 - SyncEngine: Coordinate push/pull synchronization
 - FileWatcher: Watch directory for changes with debouncing
+- EventQueue: Thread-safe priority queue for sync events
 - Conflict detection and resolution utilities
 - Retry logic with network awareness
 
@@ -17,6 +18,14 @@ from syncagent.client.sync.conflict import (
 )
 from syncagent.client.sync.download import FileDownloader
 from syncagent.client.sync.engine import SyncEngine
+from syncagent.client.sync.queue import (
+    EventQueue,
+    SyncEvent,
+    SyncEventSource,
+    SyncEventType,
+    create_queue_callback,
+    file_change_to_sync_event,
+)
 from syncagent.client.sync.retry import (
     DEFAULT_BACKOFF_MULTIPLIER,
     DEFAULT_INITIAL_BACKOFF,
@@ -74,6 +83,13 @@ __all__ = [
     "FileDownloader",
     "FileUploader",
     "SyncEngine",
+    # Event Queue
+    "EventQueue",
+    "SyncEvent",
+    "SyncEventSource",
+    "SyncEventType",
+    "create_queue_callback",
+    "file_change_to_sync_event",
     # Conflict utilities
     "generate_conflict_filename",
     "get_machine_name",

@@ -29,7 +29,7 @@
 | 12 | Resume Sync | Done |
 | 13 | Integration Tests | Done |
 | 14 | Sync Optimizations | Pending |
-| 15 | Real-Time Local Dashboard | Pending |
+| 15 | Event-Driven Sync Architecture | Pending |
 
 ---
 
@@ -237,118 +237,191 @@
 
 ---
 
-## Phase 14: Sync Optimizations (State of the Art)
+## Phase 14: Sync Optimizations
 
-**Objectif:** Atteindre les performances des solutions cloud comme GDrive/OneDrive/Dropbox
+**Objectif:** Optimiser les performances de synchronisation (bande passante et charge serveur)
 
-### Haute Priorité
+### 14.1 - Delta Sync (rsync-like)
 
-- [ ] **Delta sync (rsync-like)**: Ne transférer que les blocs modifiés d'un fichier au lieu du fichier entier
-  - Utiliser rolling checksum (Rabin fingerprint) pour détecter les parties inchangées
-  - Réduire drastiquement la bande passante pour les gros fichiers modifiés
-- [ ] **Sync incrémental serveur**: API `/api/changes?since=timestamp` au lieu de lister tous les fichiers
-  - Table `change_log` avec (file_id, action, timestamp)
-  - Réduire la charge serveur et le temps de sync initial
-- [ ] **Résolution de conflits interactive**: UI pour choisir quelle version garder
-  - Créer copie locale `fichier.conflict-<machine>-<timestamp>.ext`
-  - Comparaison côte-à-côte des versions
+- [ ] **Rolling checksum** : Utiliser Rabin fingerprint pour détecter les parties inchangées
+- [ ] **Signature de fichier** : Générer une signature des blocs existants côté serveur
+- [ ] **Delta computation** : Calculer uniquement les blocs modifiés à transférer
+- [ ] **Réduction bande passante** : Ne transférer que les différences pour gros fichiers modifiés
 
-### Moyenne Priorité
+### 14.2 - Sync Incrémental Serveur
 
-- [ ] **Sync sélectif**: Choisir quels dossiers synchroniser
-  - Config `.syncfolders` pour inclure/exclure des chemins
-  - UI pour gérer les dossiers synchronisés
-- [ ] **Fichiers à la demande (placeholder files)**: Comme OneDrive "Files On-Demand"
-  - Fichiers non téléchargés localement, téléchargement à l'ouverture
-  - Nécessite intégration OS (Cloud Files API Windows, FUSE Linux)
-- [ ] **Versioning accessible**: Historique des versions via UI
-  - `GET /api/files/{path}/versions` - liste des versions
-  - Restauration d'une version spécifique
-- [ ] **Pause/Resume uploads**: Reprendre un upload interrompu au niveau chunk
-  - Stockage de la progression par chunk
-  - Vérification des chunks déjà uploadés avant reprise
+- [ ] **Table `change_log`** : (file_id, action, timestamp, machine_id)
+- [ ] **API `/api/changes?since=timestamp`** : Retourne uniquement les changements depuis le dernier sync
+- [ ] **Cursor de synchronisation** : Chaque client garde son curseur de dernière sync
+- [ ] **Cleanup automatique** : Purge des entrées change_log anciennes (> 30 jours)
 
-### Basse Priorité
+### Tests & Qualité
 
-- [ ] **Bandwidth throttling**: Limiter la bande passante utilisée
-  - Config `max_upload_speed`, `max_download_speed`
-- [ ] **LAN sync (peer-to-peer)**: Sync direct entre machines sur le même réseau
-  - Découverte mDNS/Bonjour
-  - Transfert direct sans passer par le serveur
+- [ ] Tests unitaires delta sync
+- [ ] Tests performance avec gros fichiers (100MB+ avec petites modifications)
+- [ ] Mypy strict + Ruff zero warnings
 
-**Fichiers:** `src/syncagent/client/sync.py`, `src/syncagent/client/delta.py`, `src/syncagent/server/api/changes.py`
+**Fichiers:**
+- `src/syncagent/core/delta.py` (nouveau)
+- `src/syncagent/server/api/changes.py` (nouveau)
+- `src/syncagent/server/models.py` (ajout ChangeLog)
 
 ---
 
-## Phase 15: Real-Time Server Dashboard (WebUI as Single Interface)
+## Phase 15: Event-Driven Sync Architecture
 
-**Objectif:** Enrichir le dashboard serveur existant avec des infos temps réel des clients (progression, conflits, actions)
+**Objectif:** Implémenter une architecture de synchronisation event-driven avec coordinator central, WebSocket bidirectionnel, et dashboard temps réel (inspirée de Dropbox/Syncthing)
 
-### Architecture
+### Architecture Cible
+
 ```
-┌──────────────┐                      ┌───────────────┐
-│   Browser    │◄─── WebSocket ──────►│    Server     │
-│  (WebUI)     │   (temps réel)       │  (FastAPI)    │
-└──────────────┘                      └───────┬───────┘
-                                              │
-                                              │ WebSocket
-                                              │ (events)
-                                              ▼
-                                      ┌───────────────┐
-                                      │    Client     │
-                                      │ (syncagent)   │
-                                      └───────────────┘
+┌──────────────┐     ┌─────────────────┐     ┌──────────────┐
+│   Watcher    │────►│   Event Queue   │◄────│  WebSocket   │
+│   (local)    │     │   (local)       │     │  (serveur)   │
+└──────────────┘     └────────┬────────┘     └──────────────┘
+                              │
+                              ▼
+                     ┌─────────────────┐
+                     │   Coordinator   │
+                     │  (orchestrator) │
+                     └────────┬────────┘
+                              │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+       ┌────────────┐  ┌────────────┐  ┌────────────┐
+       │  Upload    │  │  Download  │  │  Delete    │
+       │  Worker    │  │  Worker    │  │  Worker    │
+       └────────────┘  └────────────┘  └────────────┘
+              │               │               │
+              └───────────────┴───────────────┘
+                              │
+              ┌───────────────┼───────────────┐
+              ▼               ▼               ▼
+       ┌────────────┐  ┌────────────┐  ┌────────────┐
+       │  State DB  │  │  WS Client │  │  Dashboard │
+       │  (local)   │  │  (report)  │  │  (WebUI)   │
+       └────────────┘  └────────────┘  └────────────┘
 ```
 
-### 15.1 - Client → Server: Event Reporting
-- [ ] WebSocket client dans SyncEngine pour envoyer les events au serveur
-- [ ] Events émis par le client:
+### 15.1 - Event Queue System
+
+- [ ] **SyncEvent dataclass** : Représente un événement de sync (type, path, source, timestamp, priority)
+- [ ] **EventQueue class** : Queue thread-safe avec priorités
+  - Priorités : DELETE > UPLOAD > DOWNLOAD (éviter transferts inutiles)
+  - Deduplication : Un seul event par path (le plus récent)
+  - Persistence optionnelle (SQLite) pour survie aux redémarrages
+- [ ] **Event types** :
+  - `LOCAL_CREATED`, `LOCAL_MODIFIED`, `LOCAL_DELETED`
+  - `REMOTE_CREATED`, `REMOTE_MODIFIED`, `REMOTE_DELETED`
+  - `TRANSFER_COMPLETE`, `TRANSFER_FAILED`
+
+### 15.2 - Coordinator (Orchestrateur)
+
+- [ ] **SyncCoordinator class** : Chef d'orchestre central
+  - Lit les events de la queue
+  - Applique les règles de décision (matrice ci-dessous)
+  - Dispatche aux workers appropriés
+  - Peut annuler des workers en cours si nécessaire
+- [ ] **Matrice de décision** :
+  ```
+  | Event           | En cours         | Action                              |
+  |-----------------|------------------|-------------------------------------|
+  | LOCAL_MODIFIED  | DOWNLOAD même    | Annuler download, attendre, upload  |
+  | REMOTE_MODIFIED | UPLOAD même      | Marquer conflit potentiel           |
+  | LOCAL_DELETED   | DOWNLOAD même    | Annuler download, propager delete   |
+  | REMOTE_DELETED  | UPLOAD même      | Créer conflict-copy, continuer      |
+  | LOCAL_MODIFIED  | Aucun            | Ajouter upload à la queue           |
+  | REMOTE_MODIFIED | Aucun            | Ajouter download à la queue         |
+  ```
+- [ ] **Transfer tracking** : Suivi des transferts en cours (path → worker)
+
+### 15.3 - Workers Interruptibles
+
+- [ ] **BaseWorker class** : Worker de base avec support annulation
+  - Threading ou asyncio
+  - Méthode `cancel()` pour arrêt propre
+  - Callback `on_complete`, `on_error`, `on_cancelled`
+- [ ] **UploadWorker** : Refactor de FileUploader en worker
+  - Vérifie régulièrement le flag cancelled
+  - Peut reprendre (chunk-level resume existant)
+- [ ] **DownloadWorker** : Refactor de FileDownloader en worker
+  - Écriture atomique (.tmp → rename) existante
+  - Support annulation mid-download
+- [ ] **Worker Pool** : Pool de N workers concurrents (configurable)
+
+### 15.4 - WebSocket Bidirectionnel
+
+#### Server → Client (notifications de changements)
+- [ ] **Endpoint `/ws/changes`** : Notifie les clients des modifications fichiers
+  - Event format : `{"type": "file_changed", "path": "...", "version": N}`
+  - Authentification par token
+- [ ] **Client listener** : Connexion persistante, reconnexion auto avec backoff
+- [ ] **Injection events** : REMOTE_* events injectés dans la queue locale
+
+#### Client → Server (reporting de progression)
+- [ ] **Endpoint `/ws/events`** : Reçoit les events des clients
+- [ ] **Events émis** :
   - `sync_started` (machine_id, file_count)
   - `sync_progress` (machine_id, file_path, current_chunk, total_chunks, bytes)
   - `sync_completed` (machine_id, files_uploaded, files_downloaded)
   - `sync_error` (machine_id, error_message)
   - `conflict_detected` (machine_id, file_path, local_version, server_version)
-- [ ] Reconnexion automatique WebSocket avec backoff
-- [ ] File d'attente locale si déconnecté (replay on reconnect)
+- [ ] **File d'attente locale** : Buffer si déconnecté, replay on reconnect
 
-### 15.2 - Server: WebSocket Hub
-- [ ] Endpoint WebSocket `/ws/events` pour les clients (machines)
-- [ ] Endpoint WebSocket `/ws/dashboard` pour le browser (WebUI)
-- [ ] Hub central qui relaie les events clients → browsers
-- [ ] Stockage en mémoire de l'état courant de chaque machine
-- [ ] API REST `/api/machines/{id}/status` pour état actuel (fallback polling)
+### 15.5 - Server WebSocket Hub
 
-### 15.3 - Dashboard WebUI: Real-Time Updates
-- [ ] Connexion WebSocket depuis le browser vers `/ws/dashboard`
-- [ ] Page "Activity" avec:
-  - **Live Sync Progress**: Barres de progression par machine/fichier
-  - **Transfer Queue**: Fichiers en cours de transfert (toutes machines)
-  - **Activity Log**: Stream temps réel des événements
-- [ ] Mise à jour de la page "Machines" en temps réel:
+- [ ] **Endpoint `/ws/dashboard`** : Pour le browser (WebUI)
+- [ ] **Hub central** : Relaie events clients → browsers
+- [ ] **État en mémoire** : Status courant de chaque machine
+- [ ] **API REST fallback** : `/api/machines/{id}/status` pour polling
+
+### 15.6 - Dashboard WebUI Real-Time
+
+- [ ] **Connexion WebSocket** depuis le browser vers `/ws/dashboard`
+- [ ] **Page "Activity"** :
+  - Live Sync Progress : Barres de progression par machine/fichier
+  - Transfer Queue : Fichiers en cours de transfert (toutes machines)
+  - Activity Log : Stream temps réel des événements
+- [ ] **Page "Machines" enrichie** :
   - Status live (syncing, idle, error, offline)
   - Dernier fichier synchronisé
   - Vitesse de transfert
+- [ ] **Tray Icon** : Clic gauche → ouvre dashboard
 
-### 15.4 - Tray Icon Integration
-- [ ] Clic gauche → Ouvre le dashboard serveur (URL configurée)
-- [ ] Clic droit → Menu contextuel (comme maintenant)
-- [ ] Le client continue de tourner en background
+### 15.7 - Conflict Resolution Améliorée
 
-### 15.5 - Actions depuis la WebUI (optionnel, v2)
-- [ ] Bouton "Sync Now" pour forcer une sync sur une machine
-- [ ] Bouton "Pause/Resume" par machine
-- [ ] Nécessite un channel de commandes Server → Client
+- [ ] **Détection précoce** : Détecter conflit AVANT de terminer le transfert
+- [ ] **Versioning in-flight** : Savoir quelle version est en cours de transfert
 
 ### Tests & Qualité
+
+- [ ] Tests unitaires EventQueue, Coordinator, Workers
 - [ ] Tests unitaires WebSocket hub
-- [ ] Tests intégration client ↔ server WebSocket
+- [ ] Tests intégration : Scénarios de conflit mid-transfer
+- [ ] Tests de charge : 1000+ events dans la queue
 - [ ] Mypy strict + Ruff zero warnings
 
-**Fichiers:**
-- Server: `src/syncagent/server/websocket.py`, `src/syncagent/server/web/templates/activity.html`
-- Client: `src/syncagent/client/sync.py` (ajout WebSocket reporter), `src/syncagent/client/tray.py`
+### Priorité d'Implémentation
 
-**Dépendances:** Aucune nouvelle (websockets déjà présent)
+1. **EventQueue + Event types** (fondation)
+2. **Coordinator basique** (décisions sans workers)
+3. **Workers interruptibles** (refactor upload/download)
+4. **WebSocket Server→Client** (notifications)
+5. **WebSocket Client→Server** (reporting)
+6. **WebSocket Hub + Dashboard**
+
+**Fichiers à créer/modifier:**
+- Client:
+  - `src/syncagent/client/sync/queue.py` (nouveau)
+  - `src/syncagent/client/sync/coordinator.py` (nouveau)
+  - `src/syncagent/client/sync/workers.py` (nouveau)
+  - `src/syncagent/client/websocket.py` (nouveau)
+  - `src/syncagent/client/sync/engine.py` (refactor)
+- Server:
+  - `src/syncagent/server/websocket.py` (nouveau)
+  - `src/syncagent/server/web/templates/activity.html` (nouveau)
+
+**Dépendances:** `websockets` (déjà présent)
 
 ---
 
@@ -412,4 +485,72 @@
 - [x] Conventional Commits
 - [x] Docstrings fonctions publiques
 - [ ] Tests d'intégration client ↔ serveur
+
+---
+
+## Analyse des Écarts - Architecture de Synchronisation (ChatGPT Discussion Dec 2024)
+
+### Contexte
+
+Discussion avec ChatGPT sur l'architecture optimale pour un système de synchronisation bidirectionnelle réactive, inspirée des solutions state-of-the-art comme Dropbox, Syncthing, Google Drive et OneDrive.
+
+### État Actuel vs Attentes
+
+| Composant | État Actuel | Attendu (State of the Art) |
+|-----------|-------------|----------------------------|
+| **Watcher local** | ✅ watchdog + debouncing (250ms + 3s delay) | ✅ OK |
+| **Queue d'événements** | ❌ Pas de queue - traitement synchrone direct | File d'attente locale pour coordonner les actions |
+| **Coordinator/Orchestrateur** | ❌ SyncEngine fait push/pull séquentiellement | Coordinator central gérant les priorités et conflits |
+| **Notifications serveur (push)** | ❌ Pas de WebSocket - scan périodique uniquement | WebSocket pour notifications temps réel du serveur |
+| **Workers background** | ❌ Uploads/downloads bloquants dans le thread principal | Threads/tâches interruptibles contrôlés par le coordinator |
+| **Gestion mid-transfer** | ❌ Pas de gestion si fichier modifié pendant transfert | Pause/reprise automatique si fichier change en cours de transfert |
+| **Matrice de scénarios** | Partiel (hash identique = auto-resolve, sinon conflict copy) | Matrice complète de tous les cas possibles |
+
+### Scénarios Non Couverts
+
+Les scénarios suivants ne sont pas explicitement gérés dans l'architecture actuelle :
+
+1. **Fichier modifié localement pendant un download** - Le download écrase potentiellement la modification locale
+2. **Fichier modifié côté serveur pendant un upload** - Détecté comme conflit après coup, pas pendant
+3. **Modification simultanée des deux côtés** - Géré par conflit mais pas de notification temps réel
+4. **Upload/download interrompu par modification** - Pas de mécanisme pour stopper et relancer avec nouvelle version
+5. **Fichier supprimé d'un côté, modifié de l'autre** - Cas edge non documenté
+
+### Référence State of the Art
+
+#### Dropbox (d'après documentation technique)
+- **Composants client** : Watcher, Chunker, Indexer, Internal DB
+- **Message Queue** :
+  - Request Queue globale (clients → Synchronization Service)
+  - Response Queue par client (broadcast des updates)
+- **Synchronization Service** : Traite les updates et notifie les clients abonnés
+- **Conflits** : Création de "conflicted_copy" avec dernier écrivain gagne
+
+Sources :
+- [Dropbox System Design](https://www.systemdesignhandbook.com/guides/dropbox-system-design-interview/)
+- [How Dropbox Handles Conflicts](https://dropbox.tech/developers/how-the-dropbox-datastore-api-handles-conflicts-part-two-resolving-collisions)
+
+#### Syncthing (d'après documentation)
+- **Model central** : Orchestrateur de toutes les activités de synchronisation
+- **Event subsystem** : Pub/sub pour événements inter-composants
+- **Routines concurrentes** : pullerRoutine, copierRoutine, finisherRoutine, dbUpdaterRoutine
+- **Index exchange** : Comparaison d'état entre devices
+
+Sources :
+- [Syncthing Architecture](https://delftswa.gitbooks.io/desosa-2017/content/syncthing/chapter.html)
+- [Syncthing Synchronization Model](https://deepwiki.com/syncthing/syncthing/2.2-synchronization-model)
+
+#### Patterns Généraux Event-Driven
+- **Event Queue Pattern** : Gestion asynchrone des tâches
+- **Work Queue** : Distribution du travail entre workers concurrents
+- **Fan-out** : Propagation d'un événement vers plusieurs destinations
+- **Dead Letter Queue** : Gestion des erreurs
+- **Outbox Pattern** : Consistance entre DB et publication d'événements
+- **Backpressure** : Gestion de la charge
+
+Sources :
+- [Event Queue Pattern in Java](https://java-design-patterns.com/patterns/event-queue/)
+- [Event-Driven Architecture Patterns](https://solace.com/event-driven-architecture-patterns/)
+
+---
 
