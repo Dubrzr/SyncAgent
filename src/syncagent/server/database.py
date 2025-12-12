@@ -827,3 +827,68 @@ class Database:
                 session.delete(inv)
             session.commit()
             return count
+
+    # === Statistics operations ===
+
+    def get_machine_stats(self, machine_id: int) -> dict[str, int]:
+        """Get statistics for a machine.
+
+        Args:
+            machine_id: Machine ID.
+
+        Returns:
+            Dict with file_count and total_size.
+        """
+        with self._session() as session:
+            from sqlalchemy import func
+
+            # Count files updated by this machine (not deleted)
+            count_stmt = (
+                select(func.count(FileMetadata.id))
+                .where(
+                    FileMetadata.updated_by == machine_id,
+                    FileMetadata.deleted_at.is_(None),
+                )
+            )
+            file_count = session.execute(count_stmt).scalar() or 0
+
+            # Sum sizes of files updated by this machine
+            size_stmt = (
+                select(func.coalesce(func.sum(FileMetadata.size), 0))
+                .where(
+                    FileMetadata.updated_by == machine_id,
+                    FileMetadata.deleted_at.is_(None),
+                )
+            )
+            total_size = session.execute(size_stmt).scalar() or 0
+
+            return {"file_count": file_count, "total_size": total_size}
+
+    def get_all_machines_stats(self) -> dict[int, dict[str, int]]:
+        """Get statistics for all machines.
+
+        Returns:
+            Dict mapping machine_id to stats dict.
+        """
+        with self._session() as session:
+            from sqlalchemy import func
+
+            # Get file counts and sizes grouped by machine
+            stmt = (
+                select(
+                    FileMetadata.updated_by,
+                    func.count(FileMetadata.id).label("file_count"),
+                    func.coalesce(func.sum(FileMetadata.size), 0).label("total_size"),
+                )
+                .where(FileMetadata.deleted_at.is_(None))
+                .group_by(FileMetadata.updated_by)
+            )
+            results = session.execute(stmt).all()
+
+            stats: dict[int, dict[str, int]] = {}
+            for row in results:
+                stats[row.updated_by] = {
+                    "file_count": row.file_count,
+                    "total_size": row.total_size,
+                }
+            return stats

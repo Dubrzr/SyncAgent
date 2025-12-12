@@ -4,14 +4,18 @@ This module provides:
 - FileUploader: Upload files with chunking and encryption
 - FileDownloader: Download files with decryption and assembly
 - SyncEngine: Coordinate push/pull synchronization
+- Conflict detection and resolution
 """
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
+import socket
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -24,6 +28,37 @@ if TYPE_CHECKING:
     from syncagent.client.api import ServerFile
 
 logger = logging.getLogger(__name__)
+
+
+def get_machine_name() -> str:
+    """Get the current machine name for conflict file naming."""
+    return socket.gethostname()
+
+
+def generate_conflict_filename(original_path: Path, machine_name: str | None = None) -> Path:
+    """Generate a conflict filename with timestamp and machine name.
+
+    Format: filename.conflict-YYYYMMDD-HHMMSS-{machine}.ext
+
+    Args:
+        original_path: Original file path.
+        machine_name: Machine name (defaults to hostname).
+
+    Returns:
+        Path with conflict naming.
+    """
+    if machine_name is None:
+        machine_name = get_machine_name()
+
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    stem = original_path.stem
+    suffix = original_path.suffix
+
+    # Sanitize machine name (remove problematic characters)
+    safe_machine = "".join(c if c.isalnum() or c in "-_" else "_" for c in machine_name)
+
+    new_name = f"{stem}.conflict-{timestamp}-{safe_machine}{suffix}"
+    return original_path.parent / new_name
 
 
 class SyncError(Exception):
@@ -297,6 +332,18 @@ class FileDownloader:
 
 
 @dataclass
+class ConflictInfo:
+    """Information about a detected conflict."""
+
+    original_path: str
+    conflict_path: str
+    local_hash: str
+    server_hash: str
+    machine_name: str
+    timestamp: str
+
+
+@dataclass
 class SyncResult:
     """Result of a sync operation."""
 
@@ -305,6 +352,15 @@ class SyncResult:
     deleted: list[str]
     conflicts: list[str]
     errors: list[str]
+
+    @property
+    def has_conflicts(self) -> bool:
+        """Check if there are any conflicts."""
+        return len(self.conflicts) > 0
+
+
+# Type alias for conflict notification callback
+ConflictCallback = Callable[[ConflictInfo], None]
 
 
 class SyncEngine:
@@ -317,6 +373,7 @@ class SyncEngine:
         base_path: Path,
         encryption_key: bytes,
         progress_callback: ProgressCallback | None = None,
+        conflict_callback: ConflictCallback | None = None,
     ) -> None:
         """Initialize the sync engine.
 
@@ -326,14 +383,17 @@ class SyncEngine:
             base_path: Base directory for synced files.
             encryption_key: 32-byte AES key for encryption.
             progress_callback: Optional callback for progress updates.
+            conflict_callback: Optional callback when conflicts are detected.
         """
         self._client = client
         self._state = state
         self._base_path = Path(base_path).resolve()
         self._key = encryption_key
         self._progress_callback = progress_callback
+        self._conflict_callback = conflict_callback
         self._uploader = FileUploader(client, encryption_key, progress_callback)
         self._downloader = FileDownloader(client, encryption_key, progress_callback)
+        self._machine_name = get_machine_name()
 
     def sync(self) -> SyncResult:
         """Perform a full sync operation.
@@ -383,8 +443,13 @@ class SyncEngine:
         local_file = self._state.get_file(relative_path)
 
         parent_version = None
+        server_file: ServerFile | None = None
+
         if local_file and local_file.server_version:
             parent_version = local_file.server_version
+            # Also fetch server file for conflict detection
+            with contextlib.suppress(NotFoundError):
+                server_file = self._client.get_file(relative_path)
         else:
             # Check if file exists on server (handles case where local state is out of sync)
             try:
@@ -428,9 +493,114 @@ class SyncEngine:
             return result
 
         except ConflictError:
-            logger.warning(f"Conflict detected for {relative_path}")
+            # Intelligent conflict detection
+            return self._handle_conflict(relative_path, local_path, server_file)
+
+    def _handle_conflict(
+        self,
+        relative_path: str,
+        local_path: Path,
+        server_file: ServerFile | None,
+    ) -> UploadResult | None:
+        """Handle a conflict with intelligent detection.
+
+        Checks if it's a real conflict or a false positive:
+        - Same hash on both sides → auto-resolve (no real conflict)
+        - Different content → create conflict copy
+
+        Args:
+            relative_path: Relative path of the file.
+            local_path: Absolute path to local file.
+            server_file: Server file metadata (may be None).
+
+        Returns:
+            UploadResult if auto-resolved, None if real conflict.
+        """
+        # Calculate local file hash
+        local_hash = self._compute_file_hash(local_path)
+
+        # Check if server has the same content (false conflict)
+        if server_file and server_file.content_hash == local_hash:
+            logger.info(
+                f"False conflict for {relative_path}: same content on both sides, auto-resolving"
+            )
+            # Just update local state to match server
+            self._state.mark_synced(
+                relative_path,
+                server_file_id=server_file.id,
+                server_version=server_file.version,
+                chunk_hashes=self._client.get_file_chunks(relative_path),
+            )
+            self._state.update_file(
+                relative_path,
+                local_mtime=local_path.stat().st_mtime,
+                local_size=local_path.stat().st_size,
+                local_hash=local_hash,
+            )
+            # Return a synthetic result indicating success
+            return UploadResult(
+                path=relative_path,
+                server_file_id=server_file.id,
+                server_version=server_file.version,
+                chunk_hashes=self._client.get_file_chunks(relative_path),
+                size=server_file.size,
+                content_hash=server_file.content_hash,
+            )
+
+        # Real conflict - create conflict copy
+        logger.warning(f"Real conflict detected for {relative_path}")
+        conflict_path = generate_conflict_filename(local_path, self._machine_name)
+
+        # Rename local file to conflict copy
+        try:
+            local_path.rename(conflict_path)
+            logger.info(f"Created conflict copy: {conflict_path.name}")
+        except OSError as e:
+            logger.error(f"Failed to create conflict copy: {e}")
             self._state.mark_conflict(relative_path)
             return None
+
+        # Download server version to original path
+        if server_file:
+            try:
+                self._downloader.download_file(server_file, local_path)
+                # Update state to match server
+                self._state.mark_synced(
+                    relative_path,
+                    server_file_id=server_file.id,
+                    server_version=server_file.version,
+                    chunk_hashes=self._client.get_file_chunks(relative_path),
+                )
+            except Exception as e:
+                logger.error(f"Failed to download server version: {e}")
+                # Restore local file
+                conflict_path.rename(local_path)
+                self._state.mark_conflict(relative_path)
+                return None
+
+        # Notify about conflict
+        conflict_info = ConflictInfo(
+            original_path=relative_path,
+            conflict_path=str(conflict_path.relative_to(self._base_path)),
+            local_hash=local_hash,
+            server_hash=server_file.content_hash if server_file else "",
+            machine_name=self._machine_name,
+            timestamp=datetime.now().isoformat(),
+        )
+
+        if self._conflict_callback:
+            self._conflict_callback(conflict_info)
+
+        self._state.mark_conflict(relative_path)
+        return None
+
+    def _compute_file_hash(self, path: Path) -> str:
+        """Compute SHA-256 hash of a file."""
+        hasher = hashlib.sha256()
+        with open(path, "rb") as f:
+            for block in iter(lambda: f.read(8192), b""):
+                hasher.update(block)
+        return hasher.hexdigest()
 
     def pull_file(self, server_file: ServerFile) -> DownloadResult:
         """Pull a single file from the server.

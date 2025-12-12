@@ -389,6 +389,17 @@ async def files_page(
 # Machines
 # ---------------------------------------------------------------------------
 
+def format_size(size_bytes: int) -> str:
+    """Format size in bytes to human-readable string."""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    if size_bytes < 1024 * 1024:
+        return f"{size_bytes / 1024:.1f} KB"
+    if size_bytes < 1024 * 1024 * 1024:
+        return f"{size_bytes / (1024 * 1024):.1f} MB"
+    return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
+
+
 @router.get("/machines", response_class=HTMLResponse)
 async def machines_page(
     request: Request,
@@ -409,6 +420,14 @@ async def machines_page(
     machines = db.list_machines()
     now = utcnow_naive()
 
+    # Get statistics for all machines
+    all_stats = db.get_all_machines_stats()
+    # Create a dict with defaults for machines without files
+    machine_stats = {
+        m.id: all_stats.get(m.id, {"file_count": 0, "total_size": 0})
+        for m in machines
+    }
+
     return templates.TemplateResponse(
         "machines.html",
         {
@@ -417,6 +436,8 @@ async def machines_page(
             "admin_username": admin_username,
             "active_tab": "machines",
             "machines": machines,
+            "machine_stats": machine_stats,
+            "format_size": format_size,
             "now": now,
         }
     )

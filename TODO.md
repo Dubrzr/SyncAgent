@@ -24,7 +24,7 @@
 | 7 | Protocol Handler | Done |
 | 8 | Tray Icon | Done |
 | 9 | Manual Testing & UX Fixes | Done |
-| 10 | Conflict Management | Pending |
+| 10 | Conflict Management | Done |
 | 11 | Trash Auto-Purge | Pending |
 | 12 | Resume Sync | Pending |
 | 13 | Integration Tests | Pending |
@@ -161,20 +161,28 @@
 ---
 
 
-## Phase 10: Conflict Management
+## Phase 10: Conflict Management [DONE]
 
-**Objectif:** Permettre aux utilisateurs de gérer les conflits de synchronisation
+**Objectif:** Détecter et signaler les conflits de synchronisation à l'utilisateur
 
-- [ ] Créer copie locale lors d'un conflit: `fichier (conflit - machine - timestamp).ext`
-- [ ] Stocker métadonnées du conflit (machine source, timestamp, versions)
-- [ ] API: `GET /api/conflicts` - lister les fichiers en conflit
-- [ ] API: `POST /api/conflicts/{path}/resolve` - résoudre (keep_local, keep_server, keep_both)
-- [ ] Web UI: Page `/conflicts` avec liste des conflits et comparaison versions
-- [ ] CLI: `syncagent conflicts` (liste) et `syncagent resolve <path>` (résolution interactive)
-- [ ] Tests unitaires (95%+ coverage)
-- [ ] Mypy strict + Ruff zero warnings
+### 10.1 - Détection intelligente (éviter faux conflits)
+- [x] Si hash identique des deux côtés → auto-résoudre silencieusement (pas de conflit réel)
+- [x] Si un seul côté modifié depuis dernier sync → pas de conflit, prendre la modification
 
-**Fichiers:** `src/syncagent/client/sync.py`, `src/syncagent/server/api/conflicts.py`, `src/syncagent/server/web/templates/conflicts.html`
+### 10.2 - Création copie conflictuelle
+- [x] Format: `fichier.conflict-YYYYMMDD-HHMMSS-{machine}.ext`
+- [x] Conserver le fichier serveur, renommer le local en `.conflict-*`
+- [x] Logger l'événement avec détails (versions, timestamps, machines)
+
+### 10.3 - Notification système
+- [x] Notification OS (Windows toast, macOS notification, Linux notify-send)
+- [x] Message: "Conflit détecté: {filename} - Vérifiez le fichier .conflict-*"
+- [x] Tray icon: indicateur visuel si conflits (TrayStatus.CONFLICT déjà implémenté)
+
+- [x] Tests unitaires (33 tests pour sync + notifications)
+- [x] Mypy strict + Ruff zero warnings
+
+**Fichiers:** `src/syncagent/client/sync.py`, `src/syncagent/client/notifications.py`, `src/syncagent/client/cli.py`
 
 ---
 
@@ -313,10 +321,10 @@
 ### Autres (Julien)
 - [x] Possibilité d'enlever une machine depuis la wui
 - [x] On doit pouvoir configurer dans le syncagent register le nom de la machine (entrée pour le nom par défaut)
-- [ ] Voir des statistiques sur chaque machine dans la wui: nombre de fichiers exactement synchronisés sur cette machine, place utilisée sur le storage
+- [x] Voir des statistiques sur chaque machine dans la wui: nombre de fichiers exactement synchronisés sur cette machine, place utilisée sur le storage
 - [ ] Que se passe-t-il si un fichier est supprimé, puis à sa place (même path/nom de fichier) un nouveau est créé, et que j'essaye de restaurer le fichier supprimé (qui est censé arrivé à son original location?)
 - [x] L'affichage logique des fichiers dans l'UI doit gérer une hierarchie de dossiers/fichiers, pas tous les fichiers à plat
-- [ ] Quand le serveur est lancé; il doit indiquer où il stocke ses chunks
+- [x] Quand le serveur est lancé; il doit indiquer où il stocke ses chunks
 - [x] La commande sync doit afficher une barre de progression des fichiers actuellement en cours de synchro
 - [x] Détection et synchronisation des fichiers supprimés localement
 

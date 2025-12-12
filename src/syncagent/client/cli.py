@@ -540,8 +540,9 @@ def sync(watch: bool, no_progress: bool) -> None:
     Use --watch to continuously monitor for changes.
     """
     from syncagent.client.api import SyncClient
+    from syncagent.client.notifications import notify_conflict
     from syncagent.client.state import SyncState
-    from syncagent.client.sync import SyncEngine
+    from syncagent.client.sync import ConflictInfo, SyncEngine
 
     config_dir = get_config_dir()
 
@@ -583,12 +584,25 @@ def sync(watch: bool, no_progress: bool) -> None:
         if progress_bar:
             progress_bar.update(progress)
 
+    def on_conflict(conflict: ConflictInfo) -> None:
+        """Handle conflict notifications."""
+        # Display in CLI
+        click.echo(
+            click.style(f"\n⚠ Conflict: {conflict.original_path}", fg="yellow")
+        )
+        click.echo(f"  Local version saved as: {conflict.conflict_path}")
+
+        # Send system notification
+        filename = Path(conflict.original_path).name
+        notify_conflict(filename, conflict.machine_name)
+
     client = SyncClient(server_url, auth_token)
     state_db = config_dir / "state.db"
     state = SyncState(state_db)
     engine = SyncEngine(
         client, state, sync_folder, keystore.encryption_key,
-        progress_callback=on_progress if not no_progress else None
+        progress_callback=on_progress if not no_progress else None,
+        conflict_callback=on_conflict,
     )
 
     click.echo(f"Syncing with {server_url}...")
