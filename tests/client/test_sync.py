@@ -88,6 +88,11 @@ class TestFileUploader:
         test_file.write_text("Updated content")
 
         mock_client.chunk_exists.return_value = False
+        # Mock get_file to return matching version for pre-upload check
+        server_file = MagicMock()
+        server_file.version = 2  # Matches parent_version
+        mock_client.get_file.return_value = server_file
+
         updated_file = MagicMock()
         updated_file.id = 1
         updated_file.version = 3
@@ -141,11 +146,17 @@ class TestFileUploader:
         mock_client: MagicMock,
         encryption_key: bytes,
     ) -> None:
-        """Should propagate conflict error."""
+        """Should propagate conflict error from update_file."""
         test_file = tmp_path / "conflict.txt"
         test_file.write_text("Content")
 
         mock_client.chunk_exists.return_value = False
+        # Mock get_file to return matching version for pre-upload check
+        server_file = MagicMock()
+        server_file.version = 1  # Matches parent_version
+        mock_client.get_file.return_value = server_file
+
+        # But update_file fails with conflict (version changed between check and commit)
         mock_client.update_file.side_effect = ConflictError("Version conflict")
 
         uploader = FileUploader(mock_client, encryption_key)

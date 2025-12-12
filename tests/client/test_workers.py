@@ -7,6 +7,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from syncagent.client.sync.types import (
+    ConflictType,
+    EarlyConflictError,
     SyncEvent,
     SyncEventSource,
     SyncEventType,
@@ -24,6 +26,7 @@ from syncagent.client.sync.workers import (
     WorkerResult,
     WorkerState,
 )
+from syncagent.client.sync.workers.upload import EarlyConflictException
 
 
 class TestWorkerState:
@@ -509,3 +512,188 @@ class TestWorkerPool:
         assert pool.cancel("test.txt") is False
 
         pool.stop()
+
+
+class TestConflictTypes:
+    """Tests for Phase 15.7 conflict types."""
+
+    def test_conflict_type_enum(self) -> None:
+        """Should have all required conflict types."""
+        assert ConflictType.PRE_TRANSFER is not None
+        assert ConflictType.MID_TRANSFER is not None
+        assert ConflictType.POST_TRANSFER is not None
+        assert ConflictType.CONCURRENT_EVENT is not None
+
+    def test_early_conflict_error(self) -> None:
+        """Should create EarlyConflictError with details."""
+        error = EarlyConflictError(
+            path="test.txt",
+            expected_version=1,
+            actual_version=2,
+            conflict_type=ConflictType.PRE_TRANSFER,
+        )
+        assert error.path == "test.txt"
+        assert error.expected_version == 1
+        assert error.actual_version == 2
+        assert error.conflict_type == ConflictType.PRE_TRANSFER
+        assert "test.txt" in str(error)
+        assert "PRE_TRANSFER" in str(error)
+
+    def test_early_conflict_exception(self) -> None:
+        """Should wrap EarlyConflictError in EarlyConflictException."""
+        error = EarlyConflictError(
+            path="test.txt",
+            expected_version=1,
+            actual_version=3,
+            conflict_type=ConflictType.MID_TRANSFER,
+        )
+        exception = EarlyConflictException(error)
+        assert exception.conflict_error is error
+        assert "test.txt" in str(exception)
+
+
+class TestUploadWorkerEarlyConflict:
+    """Tests for UploadWorker early conflict detection (Phase 15.7)."""
+
+    @pytest.fixture
+    def mock_client(self) -> MagicMock:
+        """Create a mock SyncClient."""
+        return MagicMock()
+
+    @pytest.fixture
+    def encryption_key(self) -> bytes:
+        """Generate test encryption key."""
+        from syncagent.core.crypto import derive_key, generate_salt
+
+        return derive_key("test", generate_salt())
+
+    def test_pre_upload_conflict_detection(
+        self,
+        mock_client: MagicMock,
+        encryption_key: bytes,
+        tmp_path: Path,
+    ) -> None:
+        """Should detect conflict before starting upload."""
+        # Create test file
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("test content")
+
+        # Mock client: server has version 3, but we expect version 1
+        mock_server_file = MagicMock()
+        mock_server_file.version = 3
+        mock_client.get_file.return_value = mock_server_file
+
+        # Create event with parent_version=1 (conflict!)
+        event = SyncEvent.create(
+            event_type=SyncEventType.LOCAL_MODIFIED,
+            path="test.txt",
+            source=SyncEventSource.LOCAL,
+            metadata={"parent_version": 1},
+        )
+
+        worker = UploadWorker(mock_client, encryption_key, tmp_path)
+        result = worker.execute(event)
+
+        # Should fail due to early conflict
+        assert result is False
+        # Upload should NOT have been called (we detected conflict early)
+        mock_client.upload_chunk.assert_not_called()
+        mock_client.create_file.assert_not_called()
+
+    def test_no_conflict_when_versions_match(
+        self,
+        mock_client: MagicMock,
+        encryption_key: bytes,
+        tmp_path: Path,
+    ) -> None:
+        """Should proceed normally when versions match."""
+        # Create test file
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("test content")
+
+        # Mock client: server has version 2, we expect version 2
+        mock_server_file = MagicMock()
+        mock_server_file.version = 2
+        mock_server_file.id = 1
+        mock_client.get_file.return_value = mock_server_file
+        mock_client.chunk_exists.return_value = False
+        mock_client.update_file.return_value = MagicMock(id=1, version=3)
+
+        # Create event with matching parent_version
+        event = SyncEvent.create(
+            event_type=SyncEventType.LOCAL_MODIFIED,
+            path="test.txt",
+            source=SyncEventSource.LOCAL,
+            metadata={"parent_version": 2},
+        )
+
+        worker = UploadWorker(mock_client, encryption_key, tmp_path)
+        result = worker.execute(event)
+
+        # Should succeed
+        assert result is True
+        mock_client.upload_chunk.assert_called()
+        mock_client.update_file.assert_called_once()
+
+    def test_conflict_when_file_deleted_on_server(
+        self,
+        mock_client: MagicMock,
+        encryption_key: bytes,
+        tmp_path: Path,
+    ) -> None:
+        """Should detect conflict when file was deleted on server."""
+        from syncagent.client.api import NotFoundError
+
+        # Create test file
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("test content")
+
+        # Mock client: file not found (deleted)
+        mock_client.get_file.side_effect = NotFoundError("Not found", 404)
+
+        # Create event expecting file to exist
+        event = SyncEvent.create(
+            event_type=SyncEventType.LOCAL_MODIFIED,
+            path="test.txt",
+            source=SyncEventSource.LOCAL,
+            metadata={"parent_version": 1},
+        )
+
+        worker = UploadWorker(mock_client, encryption_key, tmp_path)
+        result = worker.execute(event)
+
+        # Should fail due to conflict (file deleted)
+        assert result is False
+        mock_client.upload_chunk.assert_not_called()
+
+    def test_skip_conflict_check_for_new_files(
+        self,
+        mock_client: MagicMock,
+        encryption_key: bytes,
+        tmp_path: Path,
+    ) -> None:
+        """Should skip conflict check for new files (no parent_version)."""
+        # Create test file
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("test content")
+
+        # Mock client
+        mock_client.chunk_exists.return_value = False
+        mock_client.create_file.return_value = MagicMock(id=1, version=1)
+
+        # Create event WITHOUT parent_version (new file)
+        event = SyncEvent.create(
+            event_type=SyncEventType.LOCAL_CREATED,
+            path="test.txt",
+            source=SyncEventSource.LOCAL,
+            # No parent_version in metadata
+        )
+
+        worker = UploadWorker(mock_client, encryption_key, tmp_path)
+        result = worker.execute(event)
+
+        # Should succeed
+        assert result is True
+        # get_file should NOT be called for new files
+        mock_client.get_file.assert_not_called()
+        mock_client.create_file.assert_called_once()

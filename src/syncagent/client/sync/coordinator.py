@@ -28,6 +28,7 @@ import threading
 from typing import TYPE_CHECKING, Protocol
 
 from syncagent.client.sync.types import (
+    ConflictType,
     CoordinatorState,
     CoordinatorStats,
     SyncEvent,
@@ -338,9 +339,23 @@ class SyncCoordinator:
             # Remote event while transfer in progress
             if existing.transfer_type == TransferType.UPLOAD:
                 # REMOTE_MODIFIED while UPLOAD -> Potential conflict
+                # Phase 15.7: Use ConflictType for concurrent event conflicts
+                server_version = new_event.metadata.get("version")
+                if server_version is not None:
+                    server_version = int(server_version)
+
                 logger.warning(
-                    "Potential conflict on %s: upload in progress, remote modified",
+                    "Concurrent conflict on %s: upload in progress (base v%s), "
+                    "remote modified to v%s",
                     new_event.path,
+                    existing.base_version,
+                    server_version,
+                )
+
+                # Mark the transfer with conflict info
+                existing.set_conflict(
+                    ConflictType.CONCURRENT_EVENT,
+                    server_version,
                 )
                 self._stats.conflicts_detected += 1
 
@@ -360,6 +375,9 @@ class SyncCoordinator:
         Args:
             event: The event to dispatch
         """
+        # Import here to avoid circular imports
+        from syncagent.client.sync.workers.upload import EarlyConflictException
+
         # Determine transfer type based on event
         transfer_type = self._event_to_transfer_type(event)
         if transfer_type is None:
@@ -372,19 +390,28 @@ class SyncCoordinator:
             logger.warning("No worker registered for %s", transfer_type.name)
             return
 
+        # Phase 15.7: Track base version for in-flight version tracking
+        base_version = None
+        if transfer_type == TransferType.UPLOAD:
+            parent_version = event.metadata.get("parent_version")
+            if parent_version is not None:
+                base_version = int(parent_version)
+
         # Create transfer state
         transfer = TransferState(
             path=event.path,
             transfer_type=transfer_type,
             status=TransferStatus.IN_PROGRESS,
             event=event,
+            base_version=base_version,  # Phase 15.7
         )
         self._transfers[event.path] = transfer
 
         logger.info(
-            "Starting %s for %s",
+            "Starting %s for %s (base_version=%s)",
             transfer_type.name,
             event.path,
+            base_version,
         )
 
         # Execute synchronously in coordinator thread
@@ -406,6 +433,27 @@ class SyncCoordinator:
                 transfer.status = TransferStatus.FAILED
                 self._stats.errors += 1
                 logger.error("Transfer failed: %s", event.path)
+
+        except EarlyConflictException as e:
+            # Phase 15.7: Early conflict detection
+            transfer.status = TransferStatus.FAILED
+            transfer.set_conflict(
+                e.conflict_error.conflict_type,
+                e.conflict_error.actual_version,
+            )
+            transfer.error = str(e)
+            self._stats.conflicts_detected += 1
+            logger.warning(
+                "Early conflict on %s: expected v%s, server has v%s (%s)",
+                event.path,
+                e.conflict_error.expected_version,
+                e.conflict_error.actual_version,
+                e.conflict_error.conflict_type.name,
+            )
+
+            # Notify via conflict callback
+            if self._on_conflict:
+                self._on_conflict(event.path, event, event)  # Same event for early conflict
 
         except Exception as e:
             transfer.status = TransferStatus.FAILED

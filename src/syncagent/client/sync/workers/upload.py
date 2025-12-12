@@ -10,13 +10,24 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from syncagent.client.sync.types import UploadResult
+from syncagent.client.sync.types import EarlyConflictError, UploadResult
 from syncagent.client.sync.upload import FileUploader, UploadCancelledError
 from syncagent.client.sync.workers.base import (
     BaseWorker,
     CancelledException,
     WorkerContext,
 )
+
+
+class EarlyConflictException(CancelledException):
+    """Raised when an early conflict is detected (Phase 15.7).
+
+    Contains the original EarlyConflictError with conflict details.
+    """
+
+    def __init__(self, error: EarlyConflictError) -> None:
+        super().__init__(str(error))
+        self.conflict_error = error
 
 if TYPE_CHECKING:
     from syncagent.client.api import SyncClient
@@ -104,5 +115,8 @@ class UploadWorker(BaseWorker):
                 cancel_check=ctx.cancel_check,
             )
             return result
+        except EarlyConflictError as e:
+            # Phase 15.7: Early conflict detection
+            raise EarlyConflictException(e) from e
         except UploadCancelledError as e:
             raise CancelledException(str(e)) from e

@@ -14,6 +14,7 @@ from syncagent.client.sync.coordinator import (
 )
 from syncagent.client.sync.queue import EventQueue
 from syncagent.client.sync.types import (
+    ConflictType,
     SyncEvent,
     SyncEventSource,
     SyncEventType,
@@ -101,6 +102,62 @@ class TestTransferState:
 
         assert not state.cancel_requested
         state.request_cancel()
+        assert state.cancel_requested
+
+    def test_transfer_state_with_base_version(self) -> None:
+        """Should track base version for in-flight transfers (Phase 15.7)."""
+        event = SyncEvent.create(
+            SyncEventType.LOCAL_MODIFIED, "test.txt", SyncEventSource.LOCAL
+        )
+        state = TransferState(
+            path="test.txt",
+            transfer_type=TransferType.UPLOAD,
+            status=TransferStatus.IN_PROGRESS,
+            event=event,
+            base_version=5,
+        )
+
+        assert state.base_version == 5
+        assert state.detected_server_version is None
+        assert state.conflict_type is None
+
+    def test_set_conflict(self) -> None:
+        """Should set conflict info and auto-cancel (Phase 15.7)."""
+        event = SyncEvent.create(
+            SyncEventType.LOCAL_MODIFIED, "test.txt", SyncEventSource.LOCAL
+        )
+        state = TransferState(
+            path="test.txt",
+            transfer_type=TransferType.UPLOAD,
+            status=TransferStatus.IN_PROGRESS,
+            event=event,
+            base_version=3,
+        )
+
+        assert not state.cancel_requested
+        state.set_conflict(ConflictType.PRE_TRANSFER, detected_version=5)
+
+        assert state.conflict_type == ConflictType.PRE_TRANSFER
+        assert state.detected_server_version == 5
+        assert state.cancel_requested  # Auto-cancelled
+
+    def test_set_conflict_concurrent_event(self) -> None:
+        """Should handle concurrent event conflict (Phase 15.7)."""
+        event = SyncEvent.create(
+            SyncEventType.LOCAL_MODIFIED, "test.txt", SyncEventSource.LOCAL
+        )
+        state = TransferState(
+            path="test.txt",
+            transfer_type=TransferType.UPLOAD,
+            status=TransferStatus.IN_PROGRESS,
+            event=event,
+            base_version=2,
+        )
+
+        state.set_conflict(ConflictType.CONCURRENT_EVENT, detected_version=4)
+
+        assert state.conflict_type == ConflictType.CONCURRENT_EVENT
+        assert state.detected_server_version == 4
         assert state.cancel_requested
 
 
@@ -427,7 +484,7 @@ class TestDecisionMatrix:
             lambda path, local, remote: conflicts.append((path, local, remote))
         )
 
-        # Simulate an in-progress upload
+        # Simulate an in-progress upload with base_version
         upload_event = SyncEvent.create(
             SyncEventType.LOCAL_MODIFIED, "test.txt", SyncEventSource.LOCAL
         )
@@ -436,12 +493,14 @@ class TestDecisionMatrix:
             transfer_type=TransferType.UPLOAD,
             status=TransferStatus.IN_PROGRESS,
             event=upload_event,
+            base_version=2,  # Phase 15.7: track base version
         )
         coordinator._transfers["test.txt"] = existing_transfer
 
-        # New remote modification event
+        # New remote modification event with server version
         remote_event = SyncEvent.create(
-            SyncEventType.REMOTE_MODIFIED, "test.txt", SyncEventSource.REMOTE
+            SyncEventType.REMOTE_MODIFIED, "test.txt", SyncEventSource.REMOTE,
+            metadata={"version": 4},  # Server is now at version 4
         )
 
         # Call _handle_concurrent directly
@@ -452,8 +511,11 @@ class TestDecisionMatrix:
         assert len(conflicts) == 1
         assert conflicts[0][0] == "test.txt"
 
-        # Upload should NOT be cancelled (we detect conflict but continue)
-        assert existing_transfer.cancel_requested is False
+        # Phase 15.7: Should have conflict type set
+        assert existing_transfer.conflict_type == ConflictType.CONCURRENT_EVENT
+        assert existing_transfer.detected_server_version == 4
+        # Now auto-cancels on conflict
+        assert existing_transfer.cancel_requested is True
 
     def test_local_deleted_during_download(self) -> None:
         """LOCAL_DELETED during DOWNLOAD should cancel download."""

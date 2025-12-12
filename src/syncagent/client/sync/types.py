@@ -8,6 +8,7 @@ This module provides:
 - ConflictInfo: Conflict detection information
 - SyncEventType, SyncEventSource, SyncEvent: Event queue types
 - TransferType, TransferStatus, TransferState: Coordinator types
+- ConflictType: Types of conflicts (pre/mid/post transfer)
 - CoordinatorState, CoordinatorStats: Coordinator state
 - Type aliases for callbacks
 """
@@ -31,6 +32,35 @@ class UploadError(SyncError):
 
 class DownloadError(SyncError):
     """Failed to download a file."""
+
+
+class EarlyConflictError(SyncError):
+    """Conflict detected before or during transfer (Phase 15.7).
+
+    This allows early cancellation to avoid wasting bandwidth.
+
+    Attributes:
+        path: File path with conflict
+        expected_version: Version we were uploading against
+        actual_version: Current server version
+        conflict_type: When the conflict was detected
+    """
+
+    def __init__(
+        self,
+        path: str,
+        expected_version: int | None,
+        actual_version: int,
+        conflict_type: ConflictType,
+    ) -> None:
+        self.path = path
+        self.expected_version = expected_version
+        self.actual_version = actual_version
+        self.conflict_type = conflict_type
+        super().__init__(
+            f"Conflict on {path}: expected version {expected_version}, "
+            f"server has {actual_version} ({conflict_type.name})"
+        )
 
 
 @dataclass
@@ -80,7 +110,19 @@ class DownloadResult:
 
 @dataclass
 class ConflictInfo:
-    """Information about a detected conflict."""
+    """Information about a detected conflict.
+
+    Attributes:
+        original_path: Path of the conflicting file
+        conflict_path: Path where conflict copy was saved (if any)
+        local_hash: Hash of the local file version
+        server_hash: Hash of the server file version
+        machine_name: Name of the machine where conflict was detected
+        timestamp: When the conflict was detected
+        conflict_type: When the conflict was detected (pre/mid/post transfer)
+        local_version: Local version being uploaded
+        server_version: Server version that caused the conflict
+    """
 
     original_path: str
     conflict_path: str
@@ -88,6 +130,10 @@ class ConflictInfo:
     server_hash: str
     machine_name: str
     timestamp: str
+    # Enhanced conflict info (Phase 15.7)
+    conflict_type: ConflictType | None = None
+    local_version: int | None = None  # Version we were uploading against
+    server_version: int | None = None  # Actual server version
 
 
 @dataclass
@@ -230,6 +276,22 @@ class TransferType(IntEnum):
     DELETE = auto()
 
 
+class ConflictType(IntEnum):
+    """Type of conflict detected.
+
+    Distinguishes when the conflict was detected for better handling:
+    - PRE_TRANSFER: Detected before transfer started (cheapest to handle)
+    - MID_TRANSFER: Detected during transfer (some wasted bandwidth)
+    - POST_TRANSFER: Detected at commit time (all bandwidth wasted)
+    - CONCURRENT_EVENT: Detected from concurrent remote event
+    """
+
+    PRE_TRANSFER = auto()  # Version mismatch before starting upload
+    MID_TRANSFER = auto()  # Version changed during upload (periodic check)
+    POST_TRANSFER = auto()  # Version mismatch at update_file() call
+    CONCURRENT_EVENT = auto()  # Remote event arrived during upload
+
+
 class TransferStatus(IntEnum):
     """Status of a transfer operation."""
 
@@ -260,6 +322,9 @@ class TransferState:
         started_at: When the transfer started
         cancel_requested: Flag to request cancellation
         error: Error message if failed
+        base_version: Server version this transfer is based on (for uploads)
+        detected_server_version: Latest server version detected during transfer
+        conflict_type: Type of conflict if one was detected
     """
 
     path: str
@@ -269,10 +334,30 @@ class TransferState:
     started_at: float = field(default_factory=time.time)
     cancel_requested: bool = False
     error: str | None = None
+    # In-flight version tracking (Phase 15.7)
+    base_version: int | None = None  # Version we're uploading against
+    detected_server_version: int | None = None  # Latest server version we detected
+    conflict_type: ConflictType | None = None  # Type of conflict if detected
 
     def request_cancel(self) -> None:
         """Request cancellation of this transfer."""
         self.cancel_requested = True
+
+    def set_conflict(
+        self,
+        conflict_type: ConflictType,
+        detected_version: int | None = None,
+    ) -> None:
+        """Mark this transfer as having a conflict.
+
+        Args:
+            conflict_type: When/how the conflict was detected
+            detected_version: The server version that caused the conflict
+        """
+        self.conflict_type = conflict_type
+        if detected_version is not None:
+            self.detected_server_version = detected_version
+        self.request_cancel()  # Auto-cancel on conflict
 
 
 @dataclass

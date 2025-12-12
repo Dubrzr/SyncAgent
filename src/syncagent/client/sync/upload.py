@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING
 
 from syncagent.client.sync.retry import DEFAULT_MAX_RETRIES, retry_with_network_wait
 from syncagent.client.sync.types import (
+    ConflictType,
+    EarlyConflictError,
     ProgressCallback,
     SyncProgress,
     UploadError,
@@ -26,6 +28,9 @@ if TYPE_CHECKING:
     from syncagent.client.state import SyncState
 
 logger = logging.getLogger(__name__)
+
+# Number of chunks between mid-transfer version checks (Phase 15.7)
+VERSION_CHECK_INTERVAL = 10
 
 
 class UploadCancelledError(UploadError):
@@ -48,6 +53,8 @@ class FileUploader:
         progress_callback: ProgressCallback | None = None,
         state: SyncState | None = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
+        enable_early_conflict_check: bool = True,
+        version_check_interval: int = VERSION_CHECK_INTERVAL,
     ) -> None:
         """Initialize the uploader.
 
@@ -57,12 +64,16 @@ class FileUploader:
             progress_callback: Optional callback for progress updates.
             state: Optional SyncState for tracking upload progress (enables resume).
             max_retries: Maximum retry attempts for chunk uploads.
+            enable_early_conflict_check: Check version before/during upload (Phase 15.7).
+            version_check_interval: Chunks between mid-transfer version checks.
         """
         self._client = client
         self._key = encryption_key
         self._progress_callback = progress_callback
         self._state = state
         self._max_retries = max_retries
+        self._enable_early_conflict_check = enable_early_conflict_check
+        self._version_check_interval = version_check_interval
 
     def upload_file(
         self,
@@ -76,6 +87,10 @@ class FileUploader:
         If state tracking is enabled, upload progress is saved after each
         chunk, allowing interrupted uploads to resume from where they left off.
 
+        Phase 15.7 enhancements:
+        - Pre-upload version check to detect conflicts early
+        - Periodic mid-transfer version checks for long uploads
+
         Args:
             local_path: Absolute path to the local file.
             relative_path: Relative path for storage on server.
@@ -88,12 +103,17 @@ class FileUploader:
         Raises:
             UploadError: If upload fails after all retries.
             UploadCancelledError: If upload is cancelled.
-            ConflictError: If version conflict detected.
+            EarlyConflictError: If version conflict detected early (Phase 15.7).
+            ConflictError: If version conflict detected at commit.
         """
         if not local_path.exists():
             raise UploadError(f"File not found: {local_path}")
 
         logger.info(f"Uploading {relative_path}")
+
+        # Phase 15.7: Pre-upload version check
+        if self._enable_early_conflict_check and parent_version is not None:
+            self._check_server_version(relative_path, parent_version, ConflictType.PRE_TRANSFER)
 
         # Chunk the file
         chunks = list(chunk_file(local_path))
@@ -126,6 +146,7 @@ class FileUploader:
 
         # Upload chunks that don't exist on server
         bytes_transferred = 0
+        chunks_since_version_check = 0
         for i, chunk in enumerate(chunks):
             # Check for cancellation before each chunk
             if cancel_check and cancel_check():
@@ -134,6 +155,17 @@ class FileUploader:
                     f"Upload of {relative_path} cancelled at chunk {i + 1}/{len(chunks)}"
                 )
 
+            # Phase 15.7: Mid-transfer version check (periodic)
+            if (
+                self._enable_early_conflict_check
+                and parent_version is not None
+                and chunks_since_version_check >= self._version_check_interval
+            ):
+                self._check_server_version(
+                    relative_path, parent_version, ConflictType.MID_TRANSFER
+                )
+                chunks_since_version_check = 0
+
             # Skip already uploaded chunks
             if chunk.hash in already_uploaded:
                 bytes_transferred += len(chunk.data)
@@ -141,6 +173,7 @@ class FileUploader:
             else:
                 self._upload_chunk_with_retry(chunk, relative_path)
                 bytes_transferred += len(chunk.data)
+                chunks_since_version_check += 1
 
             # Report progress
             if self._progress_callback:
@@ -225,3 +258,59 @@ class FileUploader:
             self._state.mark_chunk_uploaded(relative_path, chunk.hash)
 
         logger.debug(f"Uploaded chunk {chunk.hash[:8]}...")
+
+    def _check_server_version(
+        self,
+        relative_path: str,
+        expected_version: int,
+        conflict_type: ConflictType,
+    ) -> None:
+        """Check if server version matches expected (Phase 15.7).
+
+        This allows early conflict detection to avoid wasting bandwidth
+        uploading chunks that will be rejected anyway.
+
+        Args:
+            relative_path: File path to check.
+            expected_version: Version we're uploading against.
+            conflict_type: When this check is happening (pre/mid transfer).
+
+        Raises:
+            EarlyConflictError: If server version doesn't match expected.
+        """
+        from syncagent.client.api import NotFoundError
+
+        try:
+            server_file = self._client.get_file(relative_path)
+            actual_version = server_file.version
+
+            if actual_version != expected_version:
+                logger.warning(
+                    f"Early conflict detected on {relative_path}: "
+                    f"expected v{expected_version}, server has v{actual_version} "
+                    f"({conflict_type.name})"
+                )
+                raise EarlyConflictError(
+                    path=relative_path,
+                    expected_version=expected_version,
+                    actual_version=actual_version,
+                    conflict_type=conflict_type,
+                )
+
+            logger.debug(
+                f"Version check passed for {relative_path}: v{actual_version} "
+                f"({conflict_type.name})"
+            )
+
+        except NotFoundError:
+            # File was deleted on server - also a conflict for updates
+            logger.warning(
+                f"Conflict: {relative_path} was deleted on server "
+                f"(expected v{expected_version})"
+            )
+            raise EarlyConflictError(
+                path=relative_path,
+                expected_version=expected_version,
+                actual_version=-1,  # Deleted
+                conflict_type=conflict_type,
+            ) from None
