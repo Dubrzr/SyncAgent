@@ -196,3 +196,35 @@ class TestTrashPurgeScheduler:
 
         # Should not raise
         scheduler._purge_job()
+
+    def test_cleanup_changes_now(self, db: Database, storage: LocalFSStorage) -> None:
+        """Should run change log cleanup immediately with cleanup_changes_now()."""
+        # Create some changes
+        machine = db.create_machine("test", "Linux")
+        db.create_file("test.txt", 100, "hash1", machine.id)
+
+        # Make change log entry old
+        old_date = (datetime.now(UTC) - timedelta(days=31)).isoformat()
+        with db._engine.connect() as conn:
+            conn.exec_driver_sql(
+                "UPDATE change_log SET timestamp = ?",
+                (old_date,),
+            )
+            conn.commit()
+
+        scheduler = TrashPurgeScheduler(db, storage, retention_days=30)
+        deleted = scheduler.cleanup_changes_now()
+
+        # At least one change should have been deleted
+        assert deleted >= 1
+
+    def test_cleanup_changes_job_handles_exception(
+        self, db: Database, storage: LocalFSStorage
+    ) -> None:
+        """Should handle exceptions in change log cleanup job gracefully."""
+        scheduler = TrashPurgeScheduler(db, storage)
+
+        # Mock db method to raise
+        with patch.object(db, "cleanup_old_changes", side_effect=Exception("Test error")):
+            # Should not raise
+            scheduler._cleanup_changes_job()

@@ -1,8 +1,9 @@
-"""Scheduler for automatic trash purge.
+"""Scheduler for automatic maintenance tasks.
 
 This module provides:
 - Automatic daily trash purge at 3:00 AM
-- Manual purge function for CLI/API usage
+- Automatic daily change_log cleanup at 3:30 AM
+- Manual purge functions for CLI/API usage
 """
 
 from __future__ import annotations
@@ -58,9 +59,11 @@ def purge_trash_with_storage(
 
 
 class TrashPurgeScheduler:
-    """Scheduler for automatic trash purge.
+    """Scheduler for automatic maintenance tasks.
 
-    Runs daily at 3:00 AM by default.
+    Runs daily:
+    - Trash purge at 3:00 AM
+    - Change log cleanup at 3:30 AM
     """
 
     def __init__(
@@ -76,7 +79,7 @@ class TrashPurgeScheduler:
         Args:
             db: Database instance.
             storage: Chunk storage instance.
-            retention_days: Number of days to retain trash items.
+            retention_days: Number of days to retain trash items and change log.
             hour: Hour to run the purge job (0-23).
             minute: Minute to run the purge job (0-59).
         """
@@ -95,6 +98,24 @@ class TrashPurgeScheduler:
         except Exception:
             logger.exception("Error during scheduled trash purge")
 
+    def _cleanup_changes_job(self) -> None:
+        """Job function for scheduled change log cleanup."""
+        logger.info(
+            "Starting scheduled change log cleanup (retention: %d days)",
+            self._retention_days,
+        )
+        try:
+            deleted = self._db.cleanup_old_changes(self._retention_days)
+            if deleted > 0:
+                logger.info("Change log cleanup: %d old entries deleted", deleted)
+            else:
+                logger.debug(
+                    "Change log cleanup: no entries older than %d days",
+                    self._retention_days,
+                )
+        except Exception:
+            logger.exception("Error during scheduled change log cleanup")
+
     def start(self) -> None:
         """Start the scheduler."""
         if self._scheduler is not None:
@@ -102,13 +123,23 @@ class TrashPurgeScheduler:
 
         self._scheduler = BackgroundScheduler()
 
-        # Schedule daily purge at specified time
-        trigger = CronTrigger(hour=self._hour, minute=self._minute)
+        # Schedule daily trash purge at specified time
+        trash_trigger = CronTrigger(hour=self._hour, minute=self._minute)
         self._scheduler.add_job(
             self._purge_job,
-            trigger=trigger,
+            trigger=trash_trigger,
             id="trash_purge",
             name="Daily trash purge",
+            replace_existing=True,
+        )
+
+        # Schedule daily change log cleanup 30 minutes later
+        changes_trigger = CronTrigger(hour=self._hour, minute=self._minute + 30)
+        self._scheduler.add_job(
+            self._cleanup_changes_job,
+            trigger=changes_trigger,
+            id="change_log_cleanup",
+            name="Daily change log cleanup",
             replace_existing=True,
         )
 
@@ -128,9 +159,17 @@ class TrashPurgeScheduler:
             logger.info("Trash purge scheduler stopped")
 
     def run_now(self) -> tuple[int, int]:
-        """Run the purge immediately (manual trigger).
+        """Run the trash purge immediately (manual trigger).
 
         Returns:
             Tuple of (files_deleted, chunks_deleted).
         """
         return purge_trash_with_storage(self._db, self._storage, self._retention_days)
+
+    def cleanup_changes_now(self) -> int:
+        """Run the change log cleanup immediately (manual trigger).
+
+        Returns:
+            Number of change log entries deleted.
+        """
+        return self._db.cleanup_old_changes(self._retention_days)
