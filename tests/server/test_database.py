@@ -226,9 +226,10 @@ class TestFileMetadataOperations:
         assert file.deleted_at is None
 
     def test_purge_trash(self, db: Database) -> None:
-        """Should permanently delete old trash items."""
+        """Should permanently delete old trash items and return chunk hashes."""
         machine = db.create_machine("test", "Linux")
         db.create_file("test.txt", 100, "hash", machine.id)
+        db.set_file_chunks("test.txt", ["chunk1", "chunk2"])
         db.delete_file("test.txt", machine.id)
         # Force old deletion date using SQLAlchemy
         old_date = (datetime.now(UTC) - timedelta(days=31)).isoformat()
@@ -238,8 +239,9 @@ class TestFileMetadataOperations:
                 (old_date, "test.txt"),
             )
             conn.commit()
-        purged = db.purge_trash(older_than_days=30)
-        assert purged == 1
+        purged_count, chunk_hashes = db.purge_trash(older_than_days=30)
+        assert purged_count == 1
+        assert set(chunk_hashes) == {"chunk1", "chunk2"}
         assert db.get_file("test.txt") is None
 
 

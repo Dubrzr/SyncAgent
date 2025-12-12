@@ -21,12 +21,14 @@ from fastapi import FastAPI
 
 from syncagent.server.api.router import router as api_router
 from syncagent.server.database import Database
+from syncagent.server.scheduler import TrashPurgeScheduler
 from syncagent.server.storage import ChunkStorage, create_storage
 from syncagent.server.web import router as web_router
 
 # Configuration from environment variables with defaults
 DB_PATH = Path(os.environ.get("SYNCAGENT_DB_PATH", "syncagent.db"))
 LOG_PATH = Path(os.environ.get("SYNCAGENT_LOG_PATH", "syncagent-server.log"))
+TRASH_RETENTION_DAYS = int(os.environ.get("SYNCAGENT_TRASH_RETENTION_DAYS", "30"))
 
 
 def _build_storage_config() -> dict[str, str | None]:
@@ -86,7 +88,12 @@ setup_logging(LOG_PATH)
 logger = logging.getLogger(__name__)
 
 
-def create_app(db: Database, storage: ChunkStorage | None = None) -> FastAPI:
+def create_app(
+    db: Database,
+    storage: ChunkStorage | None = None,
+    trash_retention_days: int = 30,
+    enable_scheduler: bool = True,
+) -> FastAPI:
     """Create FastAPI application with custom database and storage.
 
     This is primarily used for testing with isolated databases.
@@ -94,10 +101,20 @@ def create_app(db: Database, storage: ChunkStorage | None = None) -> FastAPI:
     Args:
         db: Database instance.
         storage: Optional ChunkStorage instance.
+        trash_retention_days: Number of days to retain trash items.
+        enable_scheduler: Whether to enable the automatic trash purge scheduler.
 
     Returns:
         Configured FastAPI application.
     """
+    # Create scheduler (but don't start yet)
+    scheduler: TrashPurgeScheduler | None = None
+    if enable_scheduler:
+        scheduler = TrashPurgeScheduler(
+            db=db,
+            storage=storage,
+            retention_days=trash_retention_days,
+        )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -113,11 +130,22 @@ def create_app(db: Database, storage: ChunkStorage | None = None) -> FastAPI:
         else:
             logger.info("  Storage:  None (storage disabled)")
         logger.info("  Logs:     %s", LOG_PATH.absolute())
+        logger.info("  Trash retention: %d days", trash_retention_days)
+        if scheduler:
+            logger.info("  Auto-purge: daily at 03:00")
+        else:
+            logger.info("  Auto-purge: disabled")
         logger.info("=" * 60)
+
+        # Start scheduler
+        if scheduler:
+            scheduler.start()
 
         yield
 
         # Shutdown
+        if scheduler:
+            scheduler.stop()
         logger.info("SyncAgent Server shutting down")
 
     application = FastAPI(
@@ -129,6 +157,8 @@ def create_app(db: Database, storage: ChunkStorage | None = None) -> FastAPI:
 
     application.state.db = db
     application.state.storage = storage
+    application.state.scheduler = scheduler
+    application.state.trash_retention_days = trash_retention_days
 
     application.include_router(api_router)
     application.include_router(web_router)
@@ -141,6 +171,7 @@ def app_factory() -> FastAPI:
     return create_app(
         db=Database(DB_PATH),
         storage=create_storage(STORAGE_CONFIG),
+        trash_retention_days=TRASH_RETENTION_DAYS,
     )
 
 
@@ -148,4 +179,5 @@ def app_factory() -> FastAPI:
 app = create_app(
     db=Database(DB_PATH),
     storage=create_storage(STORAGE_CONFIG),
+    trash_retention_days=TRASH_RETENTION_DAYS,
 )

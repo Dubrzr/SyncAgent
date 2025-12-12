@@ -59,6 +59,9 @@ server = [
 
     # S3 storage
     "boto3>=1.35.0,<2.0.0",
+
+    # Scheduler for automatic trash purge
+    "apscheduler>=3.10.0,<4.0.0",
 ]
 
 tray = [
@@ -143,6 +146,7 @@ module = [
     "PIL", "PIL.*",
     "pystray", "pystray.*",
     "winreg",
+    "apscheduler", "apscheduler.*",
 ]
 ignore_missing_imports = true
 

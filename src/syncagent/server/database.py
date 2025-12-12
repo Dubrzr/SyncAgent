@@ -455,46 +455,56 @@ class Database:
                 file.deleted_at = None
                 session.commit()
 
-    def permanently_delete_file(self, file_id: int) -> None:
+    def permanently_delete_file(self, file_id: int) -> list[str]:
         """Permanently delete a file.
 
         Args:
             file_id: File ID.
+
+        Returns:
+            List of chunk hashes that were associated with the file
+            (caller should delete these from storage).
         """
         with self._session() as session:
             file = session.get(FileMetadata, file_id)
             if file:
+                # Collect chunk hashes before deletion
+                chunk_hashes = [chunk.chunk_hash for chunk in file.chunks]
                 # Also delete associated chunks
                 for chunk in list(file.chunks):
                     session.delete(chunk)
                 session.delete(file)
                 session.commit()
+                return chunk_hashes
+            return []
 
-    def empty_trash(self) -> int:
+    def empty_trash(self) -> tuple[int, list[str]]:
         """Permanently delete all files in trash.
 
         Returns:
-            Number of files deleted.
+            Tuple of (number of files deleted, list of chunk hashes to delete from storage).
         """
         with self._session() as session:
             stmt = select(FileMetadata).where(FileMetadata.deleted_at.is_not(None))
             files = list(session.execute(stmt).scalars().all())
             count = len(files)
+            chunk_hashes: list[str] = []
             for file in files:
                 for chunk in list(file.chunks):
+                    chunk_hashes.append(chunk.chunk_hash)
                     session.delete(chunk)
                 session.delete(file)
             session.commit()
-            return count
+            return count, chunk_hashes
 
-    def purge_trash(self, older_than_days: int = 30) -> int:
+    def purge_trash(self, older_than_days: int = 30) -> tuple[int, list[str]]:
         """Permanently delete old trash items.
 
         Args:
             older_than_days: Delete items older than this many days.
 
         Returns:
-            Number of items purged.
+            Tuple of (number of items purged, list of chunk hashes to delete from storage).
         """
         cutoff = datetime.now(UTC) - timedelta(days=older_than_days)
         with self._session() as session:
@@ -504,10 +514,15 @@ class Database:
             )
             files = list(session.execute(stmt).scalars().all())
             count = len(files)
+            chunk_hashes: list[str] = []
             for file in files:
+                # Collect chunk hashes before deletion
+                for chunk in list(file.chunks):
+                    chunk_hashes.append(chunk.chunk_hash)
+                    session.delete(chunk)
                 session.delete(file)
             session.commit()
-            return count
+            return count, chunk_hashes
 
     # === Chunk operations ===
 

@@ -23,6 +23,7 @@ from syncagent.server.database import Database
 
 if TYPE_CHECKING:
     from syncagent.server.models import FileMetadata
+    from syncagent.server.storage import ChunkStorage
 
 # Password hasher
 ph = argon2.PasswordHasher()
@@ -591,6 +592,14 @@ async def restore_file(
     return RedirectResponse(url="/trash", status_code=302)
 
 
+def get_storage(request: Request) -> "ChunkStorage | None":
+    """Get chunk storage from app state (may be None)."""
+    from syncagent.server.storage import ChunkStorage
+
+    storage: ChunkStorage | None = request.app.state.storage
+    return storage
+
+
 @router.post("/trash/{file_id}/delete")
 async def permanently_delete_file(
     request: Request,
@@ -599,7 +608,16 @@ async def permanently_delete_file(
 ) -> RedirectResponse:
     """Permanently delete a file."""
     db = get_db(request)
-    db.permanently_delete_file(file_id)
+    storage = get_storage(request)
+
+    # Delete from database and get chunk hashes
+    chunk_hashes = db.permanently_delete_file(file_id)
+
+    # Delete chunks from storage
+    if storage and chunk_hashes:
+        for chunk_hash in chunk_hashes:
+            storage.delete(chunk_hash)
+
     return RedirectResponse(url="/trash", status_code=302)
 
 
@@ -610,5 +628,14 @@ async def empty_trash(
 ) -> RedirectResponse:
     """Empty the trash (permanently delete all deleted files)."""
     db = get_db(request)
-    db.empty_trash()
+    storage = get_storage(request)
+
+    # Delete from database and get chunk hashes
+    _count, chunk_hashes = db.empty_trash()
+
+    # Delete chunks from storage
+    if storage and chunk_hashes:
+        for chunk_hash in chunk_hashes:
+            storage.delete(chunk_hash)
+
     return RedirectResponse(url="/trash", status_code=302)
