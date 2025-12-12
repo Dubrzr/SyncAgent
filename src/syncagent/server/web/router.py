@@ -146,8 +146,9 @@ async def setup_page(request: Request) -> Response:
 
     csrf_token = generate_csrf_token()
     return templates.TemplateResponse(
+        request,
         "setup.html",
-        {"request": request, "csrf_token": csrf_token}
+        {"csrf_token": csrf_token}
     )
 
 
@@ -176,8 +177,9 @@ async def setup_submit(
     if error:
         csrf_token = generate_csrf_token()
         return templates.TemplateResponse(
+            request,
             "setup.html",
-            {"request": request, "csrf_token": csrf_token, "error": error}
+            {"csrf_token": csrf_token, "error": error}
         )
 
     # Create admin
@@ -212,8 +214,9 @@ async def login_page(request: Request) -> Response:
 
     csrf_token = generate_csrf_token()
     return templates.TemplateResponse(
+        request,
         "login.html",
-        {"request": request, "csrf_token": csrf_token}
+        {"csrf_token": csrf_token}
     )
 
 
@@ -244,8 +247,9 @@ async def login_submit(
     if error:
         csrf_token = generate_csrf_token()
         return templates.TemplateResponse(
+            request,
             "login.html",
-            {"request": request, "csrf_token": csrf_token, "error": error}
+            {"csrf_token": csrf_token, "error": error}
         )
 
     # Create session
@@ -370,9 +374,9 @@ async def files_page(
     files_list = sorted([i for i in items if i["type"] == "file"], key=lambda x: x["name"].lower())
 
     return templates.TemplateResponse(
+        request,
         "files.html",
         {
-            "request": request,
             "csrf_token": get_csrf_token(session_token),
             "admin_username": admin_username,
             "active_tab": "files",
@@ -429,9 +433,9 @@ async def machines_page(
     }
 
     return templates.TemplateResponse(
+        request,
         "machines.html",
         {
-            "request": request,
             "csrf_token": get_csrf_token(session_token),
             "admin_username": admin_username,
             "active_tab": "machines",
@@ -482,9 +486,9 @@ async def invitations_page(
     now = utcnow_naive()
 
     return templates.TemplateResponse(
+        request,
         "invitations.html",
         {
-            "request": request,
             "csrf_token": get_csrf_token(session_token),
             "admin_username": admin_username,
             "active_tab": "invitations",
@@ -512,9 +516,9 @@ async def create_invitation(
     now = utcnow_naive()
 
     return templates.TemplateResponse(
+        request,
         "invitations.html",
         {
-            "request": request,
             "csrf_token": get_csrf_token(session_token),
             "admin_username": admin_username,
             "active_tab": "invitations",
@@ -562,9 +566,9 @@ async def trash_page(
     now = utcnow_naive()
 
     return templates.TemplateResponse(
+        request,
         "trash.html",
         {
-            "request": request,
             "csrf_token": get_csrf_token(session_token),
             "admin_username": admin_username,
             "active_tab": "trash",

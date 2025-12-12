@@ -57,10 +57,10 @@ class TestFileUploader:
 
         # Mock responses
         mock_client.chunk_exists.return_value = False
-        mock_client.create_file.return_value = MagicMock(
-            id=1,
-            version=1,
-        )
+        created_file = MagicMock()
+        created_file.id = 1
+        created_file.version = 1
+        mock_client.create_file.return_value = created_file
 
         uploader = FileUploader(mock_client, encryption_key)
         result = uploader.upload_file(test_file, "test.txt")
@@ -86,10 +86,10 @@ class TestFileUploader:
         test_file.write_text("Updated content")
 
         mock_client.chunk_exists.return_value = False
-        mock_client.update_file.return_value = MagicMock(
-            id=1,
-            version=3,
-        )
+        updated_file = MagicMock()
+        updated_file.id = 1
+        updated_file.version = 3
+        mock_client.update_file.return_value = updated_file
 
         uploader = FileUploader(mock_client, encryption_key)
         result = uploader.upload_file(test_file, "existing.txt", parent_version=2)
@@ -109,7 +109,10 @@ class TestFileUploader:
 
         # Chunk already exists
         mock_client.chunk_exists.return_value = True
-        mock_client.create_file.return_value = MagicMock(id=1, version=1)
+        created_file = MagicMock()
+        created_file.id = 1
+        created_file.version = 1
+        mock_client.create_file.return_value = created_file
 
         uploader = FileUploader(mock_client, encryption_key)
         uploader.upload_file(test_file, "test.txt")
@@ -324,7 +327,10 @@ class TestSyncEngine:
 
         mock_client.chunk_exists.return_value = False
         mock_client.get_file.return_value = server_file
-        mock_client.update_file.return_value = MagicMock(id=1, version=3)
+        updated_response = MagicMock()
+        updated_response.id = 1
+        updated_response.version = 3
+        mock_client.update_file.return_value = updated_response
         mock_client.get_file_chunks.return_value = []
 
         engine = SyncEngine(mock_client, sync_state, base_path, encryption_key)
@@ -510,7 +516,10 @@ class TestSyncEngine:
         mock_client.list_files.return_value = [server_file]
         mock_client.get_file.return_value = server_file
         mock_client.chunk_exists.return_value = False
-        mock_client.update_file.return_value = MagicMock(id=1, version=4)
+        updated_response = MagicMock()
+        updated_response.id = 1
+        updated_response.version = 4
+        mock_client.update_file.return_value = updated_response
         mock_client.get_file_chunks.return_value = []
 
         engine = SyncEngine(mock_client, sync_state, base_path, encryption_key)
