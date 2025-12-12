@@ -152,6 +152,9 @@ syncagent protocol-status   # Check if URL handler is registered
 # Database path (default: ./syncagent.db)
 SYNCAGENT_DB_PATH=/path/to/syncagent.db
 
+# Log file path (default: ./syncagent-server.log)
+SYNCAGENT_LOG_PATH=/var/log/syncagent-server.log
+
 # S3 Storage (optional, defaults to local filesystem)
 SYNCAGENT_S3_BUCKET=your-bucket
 SYNCAGENT_S3_ENDPOINT=https://s3.region.ovh.net

@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -23,10 +24,33 @@ from syncagent.server.database import Database
 from syncagent.server.storage import ChunkStorage, create_storage
 from syncagent.server.web import router as web_router
 
-# Configuration - can be overridden via environment variables
-DB_PATH = Path("syncagent.db")
-LOG_PATH = Path("syncagent-server.log")
-STORAGE_CONFIG: dict[str, str | None] = {"type": "local", "local_path": "storage"}
+# Configuration from environment variables with defaults
+DB_PATH = Path(os.environ.get("SYNCAGENT_DB_PATH", "syncagent.db"))
+LOG_PATH = Path(os.environ.get("SYNCAGENT_LOG_PATH", "syncagent-server.log"))
+
+
+def _build_storage_config() -> dict[str, str | None]:
+    """Build storage configuration from environment variables."""
+    # S3 storage if bucket is configured
+    s3_bucket = os.environ.get("SYNCAGENT_S3_BUCKET")
+    if s3_bucket:
+        return {
+            "type": "s3",
+            "bucket": s3_bucket,
+            "endpoint_url": os.environ.get("SYNCAGENT_S3_ENDPOINT"),
+            "access_key": os.environ.get("SYNCAGENT_S3_ACCESS_KEY"),
+            "secret_key": os.environ.get("SYNCAGENT_S3_SECRET_KEY"),
+            "region": os.environ.get("SYNCAGENT_S3_REGION", "us-east-1"),
+        }
+
+    # Local storage (default)
+    return {
+        "type": "local",
+        "local_path": os.environ.get("SYNCAGENT_STORAGE_PATH", "storage"),
+    }
+
+
+STORAGE_CONFIG = _build_storage_config()
 
 
 def setup_logging(log_path: Path) -> None:
