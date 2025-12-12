@@ -10,8 +10,8 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from syncagent.client.sync.transfers import FileUploader, UploadCancelledError
 from syncagent.client.sync.types import EarlyConflictError, UploadResult
-from syncagent.client.sync.upload import FileUploader, UploadCancelledError
 from syncagent.client.sync.workers.base import (
     BaseWorker,
     CancelledException,

@@ -10,7 +10,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from syncagent.client.sync.download import DownloadCancelledError, FileDownloader
+from syncagent.client.sync.transfers import DownloadCancelledError, FileDownloader
 from syncagent.client.sync.types import DownloadResult
 from syncagent.client.sync.workers.base import (
     BaseWorker,

@@ -25,10 +25,6 @@ from syncagent.client.sync.conflict import (
     get_machine_name,
 )
 from syncagent.client.sync.coordinator import SyncCoordinator
-from syncagent.client.sync.download import (
-    DownloadCancelledError,
-    FileDownloader,
-)
 from syncagent.client.sync.engine import ChangeScanner, SyncEngine
 from syncagent.client.sync.ignore import IgnorePatterns
 from syncagent.client.sync.queue import EventQueue
@@ -42,6 +38,12 @@ from syncagent.client.sync.retry import (
     retry_with_backoff,
     retry_with_network_wait,
     wait_for_network,
+)
+from syncagent.client.sync.transfers import (
+    DownloadCancelledError,
+    FileDownloader,
+    FileUploader,
+    UploadCancelledError,
 )
 from syncagent.client.sync.types import (
     ConflictCallback,
@@ -63,7 +65,6 @@ from syncagent.client.sync.types import (
     UploadError,
     UploadResult,
 )
-from syncagent.client.sync.upload import FileUploader, UploadCancelledError
 from syncagent.client.sync.watcher import (
     ChangeType,
     FileChange,
