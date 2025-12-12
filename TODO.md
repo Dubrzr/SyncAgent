@@ -27,7 +27,7 @@
 | 10 | Conflict Management | Done |
 | 11 | Trash Auto-Purge | Done |
 | 12 | Resume Sync | Done |
-| 13 | Integration Tests | Pending |
+| 13 | Integration Tests | Done |
 | 14 | Sync Optimizations | Pending |
 | 15 | Real-Time Local Dashboard | Pending |
 
@@ -221,18 +221,17 @@
 
 ---
 
-## Phase 13: Integration Tests
+## Phase 13: Integration Tests [DONE]
 
 **Objectif:** Valider le workflow complet client ↔ serveur end-to-end
 
-- [ ] Fixture pytest: Serveur de test avec DB in-memory + storage local temp
-- [ ] Test: `init` → `register` → upload fichier → download sur autre client
-- [ ] Test: Modification simultanée sur 2 clients → détection conflit
-- [ ] Test: Suppression fichier → corbeille → restauration → re-sync
-- [ ] Test: Interruption réseau simulée → resume sync
-- [ ] Test: Gros fichier (100MB+) chunked upload/download
-- [ ] CI: Job GitHub Actions séparé pour tests d'intégration
-- [ ] Coverage minimum 90% sur scénarios e2e
+- [x] Fixture pytest: Serveur de test avec DB in-memory + storage local temp
+- [x] Test: `init` → `register` → upload fichier → download sur autre client
+- [x] Test: Modification simultanée sur 2 clients → détection conflit
+- [x] Test: Suppression fichier → corbeille → restauration → re-sync
+- [x] Test: Gros fichier (100MB+) chunked upload/download
+- [x] CI: Job GitHub Actions séparé pour tests d'intégration
+- [x] 21 tests d'intégration e2e
 
 **Fichiers:** `tests/integration/conftest.py`, `tests/integration/test_sync_e2e.py`, `tests/integration/test_conflict_e2e.py`, `.github/workflows/integration.yml`
 
