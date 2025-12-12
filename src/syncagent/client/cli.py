@@ -731,11 +731,34 @@ def tray(dashboard_url: str) -> None:
     click.echo(f"Dashboard: {dashboard_url}")
     click.echo("Press Ctrl+C or use tray menu to quit.")
 
+    tray_icon = SyncAgentTray(sync_folder, dashboard_url, callbacks)
+
+    # Use non-blocking mode with signal handler for clean Ctrl+C on Windows
+    import signal
+    import threading
+
+    stop_event = threading.Event()
+
+    def signal_handler(signum: int, frame: object) -> None:
+        click.echo("\nStopping tray icon...")
+        tray_icon.stop()
+        stop_event.set()
+
+    signal.signal(signal.SIGINT, signal_handler)
+
+    # Start tray in background thread
+    tray_icon.start(blocking=False)
+
+    # Wait for stop signal or tray to close via menu
     try:
-        tray_icon = SyncAgentTray(sync_folder, dashboard_url, callbacks)
-        tray_icon.start(blocking=True)
+        while not stop_event.is_set():
+            # Check if tray is still running (user may have quit via menu)
+            if tray_icon._icon is None:
+                break
+            stop_event.wait(timeout=0.5)
     except KeyboardInterrupt:
         click.echo("\nStopping tray icon...")
+        tray_icon.stop()
 
 
 def main() -> None:
