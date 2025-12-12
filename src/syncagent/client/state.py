@@ -114,7 +114,11 @@ class SyncState:
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        self._conn = sqlite3.connect(
+            str(self._db_path),
+            check_same_thread=False,
+            isolation_level="DEFERRED",  # Explicit transaction mode for Python 3.12+
+        )
         self._conn.row_factory = sqlite3.Row
 
         # Enable WAL mode for better concurrency
