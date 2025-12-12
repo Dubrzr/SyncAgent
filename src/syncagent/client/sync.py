@@ -12,22 +12,79 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import logging
+import os
 import socket
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from syncagent.client.api import ConflictError, NotFoundError, SyncClient
 from syncagent.client.state import FileStatus, SyncState
 from syncagent.core.chunking import Chunk, chunk_file
 from syncagent.core.crypto import decrypt_chunk, encrypt_chunk
 
+# Default retry configuration
+DEFAULT_MAX_RETRIES = 5
+DEFAULT_INITIAL_BACKOFF = 1.0  # seconds
+DEFAULT_MAX_BACKOFF = 60.0  # seconds
+DEFAULT_BACKOFF_MULTIPLIER = 2.0
+
 if TYPE_CHECKING:
     from syncagent.client.api import ServerFile
 
 logger = logging.getLogger(__name__)
+
+
+def retry_with_backoff(
+    func: Callable[[], Any],
+    max_retries: int = DEFAULT_MAX_RETRIES,
+    initial_backoff: float = DEFAULT_INITIAL_BACKOFF,
+    max_backoff: float = DEFAULT_MAX_BACKOFF,
+    backoff_multiplier: float = DEFAULT_BACKOFF_MULTIPLIER,
+    retryable_exceptions: tuple[type[Exception], ...] = (Exception,),
+) -> Any:
+    """Execute a function with exponential backoff retry.
+
+    Args:
+        func: Function to execute.
+        max_retries: Maximum number of retry attempts.
+        initial_backoff: Initial backoff time in seconds.
+        max_backoff: Maximum backoff time in seconds.
+        backoff_multiplier: Multiplier for each retry.
+        retryable_exceptions: Tuple of exception types to retry on.
+
+    Returns:
+        Result of the function.
+
+    Raises:
+        The last exception if all retries fail.
+    """
+    backoff = initial_backoff
+    last_exception: Exception | None = None
+
+    for attempt in range(max_retries + 1):
+        try:
+            return func()
+        except retryable_exceptions as e:
+            last_exception = e
+            if attempt == max_retries:
+                logger.error(f"All {max_retries} retries failed: {e}")
+                raise
+
+            logger.warning(
+                f"Attempt {attempt + 1}/{max_retries + 1} failed: {e}. "
+                f"Retrying in {backoff:.1f}s..."
+            )
+            time.sleep(backoff)
+            backoff = min(backoff * backoff_multiplier, max_backoff)
+
+    # Should not reach here, but satisfy type checker
+    if last_exception:
+        raise last_exception
+    raise RuntimeError("Unexpected retry loop exit")
 
 
 def get_machine_name() -> str:
@@ -119,13 +176,19 @@ class DownloadResult:
 
 
 class FileUploader:
-    """Handles file upload with chunking and encryption."""
+    """Handles file upload with chunking and encryption.
+
+    Supports resumable uploads at chunk level for robustness against
+    network interruptions.
+    """
 
     def __init__(
         self,
         client: SyncClient,
         encryption_key: bytes,
         progress_callback: ProgressCallback | None = None,
+        state: SyncState | None = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
     ) -> None:
         """Initialize the uploader.
 
@@ -133,10 +196,14 @@ class FileUploader:
             client: HTTP client for server communication.
             encryption_key: 32-byte AES key for encryption.
             progress_callback: Optional callback for progress updates.
+            state: Optional SyncState for tracking upload progress (enables resume).
+            max_retries: Maximum retry attempts for chunk uploads.
         """
         self._client = client
         self._key = encryption_key
         self._progress_callback = progress_callback
+        self._state = state
+        self._max_retries = max_retries
 
     def upload_file(
         self,
@@ -144,7 +211,10 @@ class FileUploader:
         relative_path: str,
         parent_version: int | None = None,
     ) -> UploadResult:
-        """Upload a file to the server.
+        """Upload a file to the server with resumable chunk uploads.
+
+        If state tracking is enabled, upload progress is saved after each
+        chunk, allowing interrupted uploads to resume from where they left off.
 
         Args:
             local_path: Absolute path to the local file.
@@ -155,7 +225,7 @@ class FileUploader:
             UploadResult with server metadata.
 
         Raises:
-            UploadError: If upload fails.
+            UploadError: If upload fails after all retries.
             ConflictError: If version conflict detected.
         """
         if not local_path.exists():
@@ -171,11 +241,37 @@ class FileUploader:
         content_hash = self._compute_file_hash(local_path)
         size = local_path.stat().st_size
 
+        # Check for existing upload progress (resume support)
+        already_uploaded: set[str] = set()
+        if self._state:
+            progress = self._state.get_upload_progress(relative_path)
+            if progress:
+                # Verify chunk list matches (file hasn't changed)
+                if progress.chunk_hashes == chunk_hashes:
+                    already_uploaded = set(progress.uploaded_hashes)
+                    logger.info(
+                        f"Resuming upload: {len(already_uploaded)}/{len(chunks)} "
+                        "chunks already uploaded"
+                    )
+                else:
+                    # File changed, start fresh
+                    logger.info("File changed since last upload attempt, starting fresh")
+                    self._state.clear_upload_progress(relative_path)
+
+            # Start tracking progress
+            if not already_uploaded:
+                self._state.start_upload_progress(relative_path, chunk_hashes)
+
         # Upload chunks that don't exist on server
         bytes_transferred = 0
         for i, chunk in enumerate(chunks):
-            self._upload_chunk_if_needed(chunk)
-            bytes_transferred += len(chunk.data)
+            # Skip already uploaded chunks
+            if chunk.hash in already_uploaded:
+                bytes_transferred += len(chunk.data)
+                logger.debug(f"Skipping already uploaded chunk {chunk.hash[:8]}...")
+            else:
+                self._upload_chunk_with_retry(chunk, relative_path)
+                bytes_transferred += len(chunk.data)
 
             # Report progress
             if self._progress_callback:
@@ -207,6 +303,10 @@ class FileUploader:
                 chunks=chunk_hashes,
             )
 
+        # Clear upload progress on success
+        if self._state:
+            self._state.clear_upload_progress(relative_path)
+
         logger.info(
             f"Uploaded {relative_path}: {len(chunks)} chunks, "
             f"version {server_file.version}"
@@ -221,14 +321,36 @@ class FileUploader:
             content_hash=content_hash,
         )
 
-    def _upload_chunk_if_needed(self, chunk: Chunk) -> None:
-        """Upload a chunk only if it doesn't exist on server."""
+    def _upload_chunk_with_retry(self, chunk: Chunk, relative_path: str) -> None:
+        """Upload a chunk with retry and progress tracking.
+
+        Args:
+            chunk: Chunk to upload.
+            relative_path: Path for progress tracking.
+        """
+        # Check if chunk already exists on server (deduplication)
         if self._client.chunk_exists(chunk.hash):
-            logger.debug(f"Chunk {chunk.hash[:8]}... already exists")
+            logger.debug(f"Chunk {chunk.hash[:8]}... already exists on server")
+            if self._state:
+                self._state.mark_chunk_uploaded(relative_path, chunk.hash)
             return
 
+        # Upload with retry
         encrypted = encrypt_chunk(chunk.data, self._key)
-        self._client.upload_chunk(chunk.hash, encrypted)
+
+        def do_upload() -> None:
+            self._client.upload_chunk(chunk.hash, encrypted)
+
+        retry_with_backoff(
+            func=do_upload,
+            max_retries=self._max_retries,
+            retryable_exceptions=(OSError, ConnectionError, TimeoutError),
+        )
+
+        # Track progress
+        if self._state:
+            self._state.mark_chunk_uploaded(relative_path, chunk.hash)
+
         logger.debug(f"Uploaded chunk {chunk.hash[:8]}...")
 
     def _compute_file_hash(self, path: Path) -> str:
@@ -248,6 +370,7 @@ class FileDownloader:
         client: SyncClient,
         encryption_key: bytes,
         progress_callback: ProgressCallback | None = None,
+        max_retries: int = DEFAULT_MAX_RETRIES,
     ) -> None:
         """Initialize the downloader.
 
@@ -255,17 +378,23 @@ class FileDownloader:
             client: HTTP client for server communication.
             encryption_key: 32-byte AES key for decryption.
             progress_callback: Optional callback for progress updates.
+            max_retries: Maximum retry attempts for chunk downloads.
         """
         self._client = client
         self._key = encryption_key
         self._progress_callback = progress_callback
+        self._max_retries = max_retries
 
     def download_file(
         self,
         server_file: ServerFile,
         local_path: Path,
     ) -> DownloadResult:
-        """Download a file from the server.
+        """Download a file from the server with atomic write.
+
+        Uses a temporary file (.tmp) during download, then atomically
+        renames to the target path on success. This ensures no partial
+        files are left on disk if download is interrupted.
 
         Args:
             server_file: File metadata from server.
@@ -275,7 +404,7 @@ class FileDownloader:
             DownloadResult with local metadata.
 
         Raises:
-            DownloadError: If download fails.
+            DownloadError: If download fails after all retries.
         """
         logger.info(f"Downloading {server_file.path}")
 
@@ -285,50 +414,84 @@ class FileDownloader:
         # Ensure parent directory exists
         local_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Download and assemble chunks
-        bytes_transferred = 0
-        with open(local_path, "wb") as f:
-            for i, chunk_hash in enumerate(chunk_hashes):
-                try:
-                    encrypted = self._client.download_chunk(chunk_hash)
-                    decrypted = decrypt_chunk(encrypted, self._key)
-                    f.write(decrypted)
-                    bytes_transferred += len(decrypted)
-                    logger.debug(
-                        f"Downloaded chunk {i + 1}/{len(chunk_hashes)}: "
-                        f"{chunk_hash[:8]}..."
-                    )
+        # Use temporary file for atomic write
+        tmp_path = local_path.with_suffix(local_path.suffix + ".tmp")
 
-                    # Report progress
-                    if self._progress_callback:
-                        self._progress_callback(SyncProgress(
-                            file_path=server_file.path,
-                            file_size=server_file.size,
-                            current_chunk=i + 1,
-                            total_chunks=len(chunk_hashes),
-                            bytes_transferred=bytes_transferred,
-                            operation="download",
-                        ))
-                except NotFoundError as e:
-                    raise DownloadError(
-                        f"Chunk {chunk_hash} not found for {server_file.path}"
-                    ) from e
-                except Exception as e:
-                    raise DownloadError(
-                        f"Failed to download chunk {chunk_hash}: {e}"
-                    ) from e
+        try:
+            # Download and assemble chunks to temp file
+            bytes_transferred = 0
+            with open(tmp_path, "wb") as f:
+                for i, chunk_hash in enumerate(chunk_hashes):
+                    try:
+                        # Download chunk with retry
+                        encrypted = self._download_chunk_with_retry(chunk_hash)
+                        decrypted = decrypt_chunk(encrypted, self._key)
+                        f.write(decrypted)
+                        bytes_transferred += len(decrypted)
+                        logger.debug(
+                            f"Downloaded chunk {i + 1}/{len(chunk_hashes)}: "
+                            f"{chunk_hash[:8]}..."
+                        )
 
-        logger.info(
-            f"Downloaded {server_file.path}: {len(chunk_hashes)} chunks, "
-            f"version {server_file.version}"
+                        # Report progress
+                        if self._progress_callback:
+                            self._progress_callback(SyncProgress(
+                                file_path=server_file.path,
+                                file_size=server_file.size,
+                                current_chunk=i + 1,
+                                total_chunks=len(chunk_hashes),
+                                bytes_transferred=bytes_transferred,
+                                operation="download",
+                            ))
+                    except NotFoundError as e:
+                        raise DownloadError(
+                            f"Chunk {chunk_hash} not found for {server_file.path}"
+                        ) from e
+                    except Exception as e:
+                        raise DownloadError(
+                            f"Failed to download chunk {chunk_hash}: {e}"
+                        ) from e
+
+            # Atomic rename: tmp -> final path
+            # On Windows, need to remove existing file first
+            if local_path.exists():
+                local_path.unlink()
+            tmp_path.rename(local_path)
+
+            logger.info(
+                f"Downloaded {server_file.path}: {len(chunk_hashes)} chunks, "
+                f"version {server_file.version}"
+            )
+
+            return DownloadResult(
+                path=server_file.path,
+                local_path=local_path,
+                size=server_file.size,
+                version=server_file.version,
+            )
+
+        except Exception:
+            # Clean up temp file on failure
+            if tmp_path.exists():
+                with contextlib.suppress(OSError):
+                    tmp_path.unlink()
+            raise
+
+    def _download_chunk_with_retry(self, chunk_hash: str) -> bytes:
+        """Download a chunk with exponential backoff retry.
+
+        Args:
+            chunk_hash: Hash of the chunk to download.
+
+        Returns:
+            Encrypted chunk data.
+        """
+        result: bytes = retry_with_backoff(
+            func=lambda: self._client.download_chunk(chunk_hash),
+            max_retries=self._max_retries,
+            retryable_exceptions=(OSError, ConnectionError, TimeoutError),
         )
-
-        return DownloadResult(
-            path=server_file.path,
-            local_path=local_path,
-            size=server_file.size,
-            version=server_file.version,
-        )
+        return result
 
 
 @dataclass
@@ -391,7 +554,10 @@ class SyncEngine:
         self._key = encryption_key
         self._progress_callback = progress_callback
         self._conflict_callback = conflict_callback
-        self._uploader = FileUploader(client, encryption_key, progress_callback)
+        # Pass state to uploader for resume capability
+        self._uploader = FileUploader(
+            client, encryption_key, progress_callback, state=state
+        )
         self._downloader = FileDownloader(client, encryption_key, progress_callback)
         self._machine_name = get_machine_name()
 
@@ -652,8 +818,6 @@ class SyncEngine:
         - Modified files (different mtime or size)
         - Deleted files (in state DB but not on disk)
         """
-        import os
-
         from syncagent.client.watcher import IgnorePatterns
 
         # Use the same ignore patterns as the watcher

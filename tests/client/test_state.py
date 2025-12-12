@@ -303,3 +303,154 @@ class TestLocalFile:
         assert FileStatus.PENDING_UPLOAD.value == "pending_upload"
         assert FileStatus.CONFLICT.value == "conflict"
         assert FileStatus.NEW.value == "new"
+
+
+class TestUploadProgress:
+    """Tests for upload progress tracking (Phase 12)."""
+
+    @pytest.fixture
+    def state(self, tmp_path: Path) -> SyncState:
+        """Create a SyncState instance."""
+        s = SyncState(tmp_path / "state.db")
+        yield s
+        s.close()
+
+    def test_start_upload_progress(self, state: SyncState) -> None:
+        """Should start tracking upload progress."""
+        chunk_hashes = ["hash1", "hash2", "hash3"]
+        progress = state.start_upload_progress("test.txt", chunk_hashes)
+
+        assert progress.path == "test.txt"
+        assert progress.total_chunks == 3
+        assert progress.uploaded_chunks == 0
+        assert progress.chunk_hashes == chunk_hashes
+        assert progress.uploaded_hashes == []
+        assert progress.started_at > 0
+        assert progress.updated_at > 0
+
+    def test_get_upload_progress(self, state: SyncState) -> None:
+        """Should retrieve upload progress."""
+        state.start_upload_progress("test.txt", ["hash1", "hash2"])
+
+        progress = state.get_upload_progress("test.txt")
+        assert progress is not None
+        assert progress.path == "test.txt"
+        assert progress.total_chunks == 2
+
+    def test_get_nonexistent_progress(self, state: SyncState) -> None:
+        """Should return None for nonexistent progress."""
+        progress = state.get_upload_progress("nonexistent.txt")
+        assert progress is None
+
+    def test_mark_chunk_uploaded(self, state: SyncState) -> None:
+        """Should mark chunks as uploaded."""
+        state.start_upload_progress("test.txt", ["hash1", "hash2", "hash3"])
+
+        state.mark_chunk_uploaded("test.txt", "hash1")
+
+        progress = state.get_upload_progress("test.txt")
+        assert progress is not None
+        assert progress.uploaded_chunks == 1
+        assert "hash1" in progress.uploaded_hashes
+
+    def test_mark_multiple_chunks_uploaded(self, state: SyncState) -> None:
+        """Should track multiple uploaded chunks."""
+        state.start_upload_progress("test.txt", ["hash1", "hash2", "hash3"])
+
+        state.mark_chunk_uploaded("test.txt", "hash1")
+        state.mark_chunk_uploaded("test.txt", "hash2")
+
+        progress = state.get_upload_progress("test.txt")
+        assert progress is not None
+        assert progress.uploaded_chunks == 2
+        assert set(progress.uploaded_hashes) == {"hash1", "hash2"}
+
+    def test_mark_same_chunk_twice(self, state: SyncState) -> None:
+        """Should not duplicate chunk in uploaded list."""
+        state.start_upload_progress("test.txt", ["hash1", "hash2"])
+
+        state.mark_chunk_uploaded("test.txt", "hash1")
+        state.mark_chunk_uploaded("test.txt", "hash1")
+
+        progress = state.get_upload_progress("test.txt")
+        assert progress is not None
+        assert progress.uploaded_chunks == 1
+        assert progress.uploaded_hashes.count("hash1") == 1
+
+    def test_clear_upload_progress(self, state: SyncState) -> None:
+        """Should clear upload progress."""
+        state.start_upload_progress("test.txt", ["hash1"])
+        state.clear_upload_progress("test.txt")
+
+        progress = state.get_upload_progress("test.txt")
+        assert progress is None
+
+    def test_get_remaining_chunks(self, state: SyncState) -> None:
+        """Should return chunks not yet uploaded."""
+        state.start_upload_progress("test.txt", ["hash1", "hash2", "hash3"])
+        state.mark_chunk_uploaded("test.txt", "hash2")
+
+        remaining = state.get_remaining_chunks("test.txt")
+        assert set(remaining) == {"hash1", "hash3"}
+
+    def test_get_remaining_chunks_nonexistent(self, state: SyncState) -> None:
+        """Should return empty list for nonexistent file."""
+        remaining = state.get_remaining_chunks("nonexistent.txt")
+        assert remaining == []
+
+    def test_clear_all_upload_progress(self, state: SyncState) -> None:
+        """Should clear all upload progress records."""
+        state.start_upload_progress("file1.txt", ["hash1"])
+        state.start_upload_progress("file2.txt", ["hash2"])
+
+        state.clear_all_upload_progress()
+
+        assert state.get_upload_progress("file1.txt") is None
+        assert state.get_upload_progress("file2.txt") is None
+
+    def test_upload_progress_is_complete(self, state: SyncState) -> None:
+        """Should detect when upload is complete."""
+        state.start_upload_progress("test.txt", ["hash1", "hash2"])
+
+        progress = state.get_upload_progress("test.txt")
+        assert progress is not None
+        assert not progress.is_complete
+
+        state.mark_chunk_uploaded("test.txt", "hash1")
+        state.mark_chunk_uploaded("test.txt", "hash2")
+
+        progress = state.get_upload_progress("test.txt")
+        assert progress is not None
+        assert progress.is_complete
+
+    def test_upload_progress_percent(self, state: SyncState) -> None:
+        """Should calculate upload percentage correctly."""
+        state.start_upload_progress("test.txt", ["hash1", "hash2", "hash3", "hash4"])
+
+        progress = state.get_upload_progress("test.txt")
+        assert progress is not None
+        assert progress.percent == 0.0
+
+        state.mark_chunk_uploaded("test.txt", "hash1")
+        progress = state.get_upload_progress("test.txt")
+        assert progress is not None
+        assert progress.percent == 25.0
+
+        state.mark_chunk_uploaded("test.txt", "hash2")
+        progress = state.get_upload_progress("test.txt")
+        assert progress is not None
+        assert progress.percent == 50.0
+
+    def test_start_progress_replaces_existing(self, state: SyncState) -> None:
+        """Starting progress for same file should replace existing."""
+        state.start_upload_progress("test.txt", ["hash1", "hash2"])
+        state.mark_chunk_uploaded("test.txt", "hash1")
+
+        # Start new progress (file changed)
+        state.start_upload_progress("test.txt", ["new_hash1", "new_hash2", "new_hash3"])
+
+        progress = state.get_upload_progress("test.txt")
+        assert progress is not None
+        assert progress.total_chunks == 3
+        assert progress.uploaded_chunks == 0
+        assert progress.chunk_hashes == ["new_hash1", "new_hash2", "new_hash3"]

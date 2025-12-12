@@ -76,6 +76,32 @@ class PendingUpload:
     error: str | None
 
 
+@dataclass
+class UploadProgress:
+    """Tracks chunk-level upload progress for resume capability."""
+
+    id: int
+    path: str
+    total_chunks: int
+    uploaded_chunks: int
+    chunk_hashes: list[str]  # Hashes of all chunks
+    uploaded_hashes: list[str]  # Hashes of successfully uploaded chunks
+    started_at: float
+    updated_at: float
+
+    @property
+    def is_complete(self) -> bool:
+        """Check if all chunks have been uploaded."""
+        return self.uploaded_chunks >= self.total_chunks
+
+    @property
+    def percent(self) -> float:
+        """Get upload progress percentage."""
+        if self.total_chunks == 0:
+            return 100.0
+        return (self.uploaded_chunks / self.total_chunks) * 100
+
+
 class SyncState:
     """SQLite-based local state for sync client."""
 
@@ -132,6 +158,21 @@ class SyncState:
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
+
+            -- Upload progress for chunk-level resume (Phase 12)
+            CREATE TABLE IF NOT EXISTS upload_progress (
+                id INTEGER PRIMARY KEY,
+                path TEXT NOT NULL UNIQUE,
+                total_chunks INTEGER NOT NULL,
+                uploaded_chunks INTEGER DEFAULT 0,
+                chunk_hashes TEXT NOT NULL,
+                uploaded_hashes TEXT DEFAULT '[]',
+                started_at REAL NOT NULL,
+                updated_at REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_upload_progress_path
+                ON upload_progress(path);
         """)
         self._conn.commit()
 
@@ -439,3 +480,130 @@ class SyncState:
     def set_last_server_version(self, version: int) -> None:
         """Set last known server version."""
         self.set_state("last_server_version", str(version))
+
+    # === Upload Progress (Phase 12) ===
+
+    def start_upload_progress(
+        self,
+        path: str,
+        chunk_hashes: list[str],
+    ) -> UploadProgress:
+        """Start tracking upload progress for a file.
+
+        Args:
+            path: Relative path of the file.
+            chunk_hashes: List of all chunk hashes for the file.
+
+        Returns:
+            UploadProgress record.
+        """
+        now = time.time()
+        self._conn.execute(
+            """
+            INSERT OR REPLACE INTO upload_progress
+            (path, total_chunks, uploaded_chunks, chunk_hashes, uploaded_hashes, started_at, updated_at)
+            VALUES (?, ?, 0, ?, '[]', ?, ?)
+            """,
+            (path, len(chunk_hashes), json.dumps(chunk_hashes), now, now),
+        )
+        self._conn.commit()
+
+        return UploadProgress(
+            id=0,
+            path=path,
+            total_chunks=len(chunk_hashes),
+            uploaded_chunks=0,
+            chunk_hashes=chunk_hashes,
+            uploaded_hashes=[],
+            started_at=now,
+            updated_at=now,
+        )
+
+    def get_upload_progress(self, path: str) -> UploadProgress | None:
+        """Get upload progress for a file.
+
+        Args:
+            path: Relative path of the file.
+
+        Returns:
+            UploadProgress if found, None otherwise.
+        """
+        cursor = self._conn.execute(
+            "SELECT * FROM upload_progress WHERE path = ?",
+            (path,),
+        )
+        row = cursor.fetchone()
+        if row is None:
+            return None
+
+        return UploadProgress(
+            id=row["id"],
+            path=row["path"],
+            total_chunks=row["total_chunks"],
+            uploaded_chunks=row["uploaded_chunks"],
+            chunk_hashes=json.loads(row["chunk_hashes"]),
+            uploaded_hashes=json.loads(row["uploaded_hashes"]),
+            started_at=row["started_at"],
+            updated_at=row["updated_at"],
+        )
+
+    def mark_chunk_uploaded(self, path: str, chunk_hash: str) -> None:
+        """Mark a chunk as successfully uploaded.
+
+        Args:
+            path: Relative path of the file.
+            chunk_hash: Hash of the uploaded chunk.
+        """
+        # Get current uploaded hashes
+        progress = self.get_upload_progress(path)
+        if progress is None:
+            return
+
+        # Add chunk hash if not already present
+        if chunk_hash not in progress.uploaded_hashes:
+            progress.uploaded_hashes.append(chunk_hash)
+
+        self._conn.execute(
+            """
+            UPDATE upload_progress
+            SET uploaded_chunks = ?, uploaded_hashes = ?, updated_at = ?
+            WHERE path = ?
+            """,
+            (
+                len(progress.uploaded_hashes),
+                json.dumps(progress.uploaded_hashes),
+                time.time(),
+                path,
+            ),
+        )
+        self._conn.commit()
+
+    def clear_upload_progress(self, path: str) -> None:
+        """Clear upload progress for a file (after successful upload).
+
+        Args:
+            path: Relative path of the file.
+        """
+        self._conn.execute("DELETE FROM upload_progress WHERE path = ?", (path,))
+        self._conn.commit()
+
+    def get_remaining_chunks(self, path: str) -> list[str]:
+        """Get list of chunk hashes that haven't been uploaded yet.
+
+        Args:
+            path: Relative path of the file.
+
+        Returns:
+            List of chunk hashes still to upload.
+        """
+        progress = self.get_upload_progress(path)
+        if progress is None:
+            return []
+
+        uploaded_set = set(progress.uploaded_hashes)
+        return [h for h in progress.chunk_hashes if h not in uploaded_set]
+
+    def clear_all_upload_progress(self) -> None:
+        """Clear all upload progress records."""
+        self._conn.execute("DELETE FROM upload_progress")
+        self._conn.commit()

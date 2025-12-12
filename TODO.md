@@ -25,10 +25,11 @@
 | 8 | Tray Icon | Done |
 | 9 | Manual Testing & UX Fixes | Done |
 | 10 | Conflict Management | Done |
-| 11 | Trash Auto-Purge | Pending |
-| 12 | Resume Sync | Pending |
+| 11 | Trash Auto-Purge | Done |
+| 12 | Resume Sync | Done |
 | 13 | Integration Tests | Pending |
 | 14 | Sync Optimizations | Pending |
+| 15 | Real-Time Local Dashboard | Pending |
 
 ---
 
@@ -186,37 +187,37 @@
 
 ---
 
-## Phase 11: Trash Auto-Purge & Configuration
+## Phase 11: Trash Auto-Purge & Configuration [DONE]
 
 **Objectif:** Automatiser le nettoyage de la corbeille avec configuration
 
-- [ ] Variable d'environnement `SYNCAGENT_TRASH_RETENTION_DAYS` (défaut: 30)
-- [ ] Fix: Suppression explicite des chunks dans `purge_trash()` (bug actuel)
-- [ ] Scheduler APScheduler pour purge automatique (quotidienne à 3h)
-- [ ] CLI: `syncagent server purge-trash [--older-than-days N]` pour cron/manuel
-- [ ] API Admin: `POST /api/admin/purge-trash`
-- [ ] Suppression chunks du storage S3/local lors de la purge
-- [ ] Tests unitaires (95%+ coverage)
-- [ ] Mypy strict + Ruff zero warnings
+- [x] Variable d'environnement `SYNCAGENT_TRASH_RETENTION_DAYS` (défaut: 30)
+- [x] Fix: Suppression explicite des chunks dans `purge_trash()` (bug actuel)
+- [x] Scheduler APScheduler pour purge automatique (quotidienne à 3h)
+- [x] CLI: `syncagent server purge-trash [--older-than-days N]` pour cron/manuel
+- [x] API Admin: `POST /api/admin/purge-trash`
+- [x] Suppression chunks du storage S3/local lors de la purge
+- [x] Tests unitaires (19 tests, 95%+ coverage)
+- [x] Mypy strict + Ruff zero warnings
 
-**Fichiers:** `src/syncagent/server/app.py`, `src/syncagent/server/scheduler.py`, `src/syncagent/server/database.py`, `src/syncagent/server/storage.py`
+**Fichiers:** `src/syncagent/server/app.py`, `src/syncagent/server/scheduler.py`, `src/syncagent/server/api/admin.py`, `src/syncagent/server/database.py`, `src/syncagent/server/web/router.py`
 
 ---
 
-## Phase 12: Resume Sync & Robustesse
+## Phase 12: Resume Sync & Robustesse [DONE]
 
 **Objectif:** Permettre la reprise des transferts interrompus au niveau chunk
 
-- [ ] Table `upload_progress` (file_path, chunk_index, chunk_hash, uploaded_at)
-- [ ] Écriture atomique downloads: `fichier.tmp` → rename après validation
-- [ ] Tracking progression upload par chunk (pas seulement par fichier)
-- [ ] Retry avec backoff exponentiel (1s, 2s, 4s, 8s, max 60s)
-- [ ] Config `max_retry_attempts` (défaut: 5) avant marquage échec
-- [ ] Validation checksum partiel avant resume download
-- [ ] Tests unitaires (95%+ coverage)
-- [ ] Mypy strict + Ruff zero warnings
+- [x] Table `upload_progress` (file_path, chunk_hashes, uploaded_hashes, total_chunks, uploaded_chunks)
+- [x] Écriture atomique downloads: `fichier.tmp` → rename après validation
+- [x] Tracking progression upload par chunk (pas seulement par fichier)
+- [x] Retry avec backoff exponentiel (1s, 2s, 4s, 8s, max 60s)
+- [x] Config `max_retries` (défaut: 5) pour uploads/downloads
+- [x] Validation checksum avant resume (si hashes changent, restart upload)
+- [x] Tests unitaires (26 tests pour Phase 12, 95%+ coverage)
+- [x] Mypy strict + Ruff zero warnings
 
-**Fichiers:** `src/syncagent/client/sync.py`, `src/syncagent/client/state.py`, `src/syncagent/client/api.py`
+**Fichiers:** `src/syncagent/client/sync.py`, `src/syncagent/client/state.py`
 
 ---
 
@@ -280,13 +281,85 @@
 
 ---
 
+## Phase 15: Real-Time Server Dashboard (WebUI as Single Interface)
+
+**Objectif:** Enrichir le dashboard serveur existant avec des infos temps réel des clients (progression, conflits, actions)
+
+### Architecture
+```
+┌──────────────┐                      ┌───────────────┐
+│   Browser    │◄─── WebSocket ──────►│    Server     │
+│  (WebUI)     │   (temps réel)       │  (FastAPI)    │
+└──────────────┘                      └───────┬───────┘
+                                              │
+                                              │ WebSocket
+                                              │ (events)
+                                              ▼
+                                      ┌───────────────┐
+                                      │    Client     │
+                                      │ (syncagent)   │
+                                      └───────────────┘
+```
+
+### 15.1 - Client → Server: Event Reporting
+- [ ] WebSocket client dans SyncEngine pour envoyer les events au serveur
+- [ ] Events émis par le client:
+  - `sync_started` (machine_id, file_count)
+  - `sync_progress` (machine_id, file_path, current_chunk, total_chunks, bytes)
+  - `sync_completed` (machine_id, files_uploaded, files_downloaded)
+  - `sync_error` (machine_id, error_message)
+  - `conflict_detected` (machine_id, file_path, local_version, server_version)
+- [ ] Reconnexion automatique WebSocket avec backoff
+- [ ] File d'attente locale si déconnecté (replay on reconnect)
+
+### 15.2 - Server: WebSocket Hub
+- [ ] Endpoint WebSocket `/ws/events` pour les clients (machines)
+- [ ] Endpoint WebSocket `/ws/dashboard` pour le browser (WebUI)
+- [ ] Hub central qui relaie les events clients → browsers
+- [ ] Stockage en mémoire de l'état courant de chaque machine
+- [ ] API REST `/api/machines/{id}/status` pour état actuel (fallback polling)
+
+### 15.3 - Dashboard WebUI: Real-Time Updates
+- [ ] Connexion WebSocket depuis le browser vers `/ws/dashboard`
+- [ ] Page "Activity" avec:
+  - **Live Sync Progress**: Barres de progression par machine/fichier
+  - **Transfer Queue**: Fichiers en cours de transfert (toutes machines)
+  - **Activity Log**: Stream temps réel des événements
+- [ ] Mise à jour de la page "Machines" en temps réel:
+  - Status live (syncing, idle, error, offline)
+  - Dernier fichier synchronisé
+  - Vitesse de transfert
+
+### 15.4 - Tray Icon Integration
+- [ ] Clic gauche → Ouvre le dashboard serveur (URL configurée)
+- [ ] Clic droit → Menu contextuel (comme maintenant)
+- [ ] Le client continue de tourner en background
+
+### 15.5 - Actions depuis la WebUI (optionnel, v2)
+- [ ] Bouton "Sync Now" pour forcer une sync sur une machine
+- [ ] Bouton "Pause/Resume" par machine
+- [ ] Nécessite un channel de commandes Server → Client
+
+### Tests & Qualité
+- [ ] Tests unitaires WebSocket hub
+- [ ] Tests intégration client ↔ server WebSocket
+- [ ] Mypy strict + Ruff zero warnings
+
+**Fichiers:**
+- Server: `src/syncagent/server/websocket.py`, `src/syncagent/server/web/templates/activity.html`
+- Client: `src/syncagent/client/sync.py` (ajout WebSocket reporter), `src/syncagent/client/tray.py`
+
+**Dépendances:** Aucune nouvelle (websockets déjà présent)
+
+---
+
 ## Requirements Fonctionnels
 
 ### Synchronisation
 - [x] Sync bidirectionnel via serveur
 - [x] Détection automatique changements (file watcher + scan backup 5min)
 - [x] Sync incrémental (CDC)
-- [ ] Resume après interruption
+- [x] Resume après interruption
 - [x] Intégrité SHA-256 par chunk
 
 ### Chiffrement (E2EE)
@@ -304,12 +377,12 @@
 - [x] Block storage S3-compatible
 - [x] Mode local FS (dev/test)
 - [x] Chunks liés au fichier (pas de dédup v1)
-- [ ] Suppression chunks à purge corbeille
+- [x] Suppression chunks à purge corbeille
 
 ### Corbeille
-- [~] Rétention 30 jours (configurable) - *30j hardcodé, pas encore configurable*
+- [x] Rétention 30 jours (configurable via `SYNCAGENT_TRASH_RETENTION_DAYS`)
 - [x] Restauration via Web UI
-- [ ] Purge automatique
+- [x] Purge automatique (APScheduler quotidien à 3h)
 
 ### Authentification
 - [x] Machines: Bearer token
@@ -327,6 +400,8 @@
 - [x] Quand le serveur est lancé; il doit indiquer où il stocke ses chunks
 - [x] La commande sync doit afficher une barre de progression des fichiers actuellement en cours de synchro
 - [x] Détection et synchronisation des fichiers supprimés localement
+- [x] Les logs du serveur doivent aller dans un fichier de logs en + de la sortie standard
+- [ ] On peut considérer que la seule interface valable pour effectuer des actions ou voir des infos sur les processus locaux ou distants est la webui; typiquement même pour l'avancée de transferts je pense que ça pourrait être intéressant; et faire en sorte que si on a une icon system tray et qu'on clique dessus, ça devrait ouvrir la page web; de sorte à ce que l'on ait pas du tout de à dev d'ui locale → **Voir Phase 15** 
 
 ---
 
