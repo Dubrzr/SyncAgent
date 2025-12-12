@@ -376,3 +376,70 @@ class TestFileWatcher:
         paths = [c.path.name for c in changes]
         assert "test.txt" in paths
         assert "test.ignored" not in paths
+
+
+class TestSymlinkExclusion:
+    """Tests for SC-22: symlinks should not be synchronized."""
+
+    def test_symlink_file_ignored(self, tmp_path: Path) -> None:
+        """Should ignore symlink files."""
+        ignore = IgnorePatterns()
+
+        # Create a real file
+        real_file = tmp_path / "real.txt"
+        real_file.write_text("content")
+
+        # Create symlink to the file
+        symlink = tmp_path / "link.txt"
+        try:
+            symlink.symlink_to(real_file)
+        except OSError:
+            pytest.skip("Symlinks not supported or permission denied")
+
+        assert ignore.should_ignore(real_file, tmp_path) is False
+        assert ignore.should_ignore(symlink, tmp_path) is True
+
+    def test_symlink_directory_ignored(self, tmp_path: Path) -> None:
+        """Should ignore symlink directories."""
+        ignore = IgnorePatterns()
+
+        # Create a real directory
+        real_dir = tmp_path / "real_dir"
+        real_dir.mkdir()
+
+        # Create symlink to the directory
+        symlink = tmp_path / "link_dir"
+        try:
+            symlink.symlink_to(real_dir)
+        except OSError:
+            pytest.skip("Symlinks not supported or permission denied")
+
+        assert ignore.should_ignore(real_dir, tmp_path) is False
+        assert ignore.should_ignore(symlink, tmp_path) is True
+
+    def test_watcher_ignores_symlinks(self, tmp_path: Path) -> None:
+        """FileWatcher should not report changes in symlinks."""
+        watch_dir = tmp_path / "sync"
+        watch_dir.mkdir()
+
+        # Create a real file
+        real_file = watch_dir / "real.txt"
+        real_file.write_text("content")
+
+        # Create symlink
+        symlink = watch_dir / "symlink.txt"
+        try:
+            symlink.symlink_to(real_file)
+        except OSError:
+            pytest.skip("Symlinks not supported or permission denied")
+
+        changes: list[FileChange] = []
+
+        with FileWatcher(watch_dir, lambda c: changes.extend(c), sync_delay_s=0.1):
+            # Modify the symlink target through the symlink
+            symlink.write_text("modified")
+            time.sleep(0.5)
+
+        # Should have change for real.txt but not symlink.txt
+        paths = [c.path.name for c in changes]
+        assert "symlink.txt" not in paths

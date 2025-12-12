@@ -109,6 +109,10 @@ class IgnorePatterns:
         Returns:
             True if the path should be ignored.
         """
+        # Always ignore symlinks (SC-22)
+        if path.is_symlink():
+            return True
+
         try:
             rel_path = path.relative_to(base_path)
         except ValueError:
@@ -207,24 +211,24 @@ class DebouncedEventHandler(FileSystemEventHandler):
         now = time.time()
 
         # Determine change type
-        if isinstance(event, (FileCreatedEvent, DirCreatedEvent)):
+        if isinstance(event, FileCreatedEvent | DirCreatedEvent):
             change_type = ChangeType.CREATED
-        elif isinstance(event, (FileModifiedEvent, DirModifiedEvent)):
+        elif isinstance(event, FileModifiedEvent | DirModifiedEvent):
             change_type = ChangeType.MODIFIED
-        elif isinstance(event, (FileDeletedEvent, DirDeletedEvent)):
+        elif isinstance(event, FileDeletedEvent | DirDeletedEvent):
             change_type = ChangeType.DELETED
-        elif isinstance(event, (FileMovedEvent, DirMovedEvent)):
+        elif isinstance(event, FileMovedEvent | DirMovedEvent):
             change_type = ChangeType.MOVED
         else:
             return
 
         is_directory = isinstance(
             event,
-            (DirCreatedEvent, DirModifiedEvent, DirDeletedEvent, DirMovedEvent),
+            DirCreatedEvent | DirModifiedEvent | DirDeletedEvent | DirMovedEvent,
         )
 
         dest_path = None
-        if isinstance(event, (FileMovedEvent, DirMovedEvent)):
+        if isinstance(event, FileMovedEvent | DirMovedEvent):
             dest = event.dest_path
             if isinstance(dest, bytes):
                 dest = dest.decode("utf-8", errors="replace")
