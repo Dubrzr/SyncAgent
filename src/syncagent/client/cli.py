@@ -514,6 +514,7 @@ def sync(watch: bool, no_progress: bool) -> None:
     from syncagent.client.api import SyncClient
     from syncagent.client.notifications import notify_conflict
     from syncagent.client.state import SyncState
+    from syncagent.client.status import StatusReporter, StatusUpdate
     from syncagent.client.sync import (
         ChangeScanner,
         EventQueue,
@@ -522,6 +523,7 @@ def sync(watch: bool, no_progress: bool) -> None:
         WorkerPool,
     )
     from syncagent.core.config import ServerConfig
+    from syncagent.core.types import SyncState as SyncStateEnum
 
     config_dir = get_config_dir()
 
@@ -559,6 +561,10 @@ def sync(watch: bool, no_progress: bool) -> None:
     client = SyncClient(server_config)
     state_db = config_dir / "state.db"
     state = SyncState(state_db)
+
+    # Create status reporter for real-time dashboard updates
+    status_reporter = StatusReporter(server_config)
+    status_reporter.start()
 
     # Create event queue for sync events
     queue = EventQueue()
@@ -603,6 +609,9 @@ def sync(watch: bool, no_progress: bool) -> None:
         deleted = []
         conflicts = []
         errors = []
+
+        # Report syncing state
+        status_reporter.update_status(StatusUpdate(state=SyncStateEnum.SYNCING))
 
         try:
             # Scan for changes and push events to queue
@@ -655,10 +664,23 @@ def sync(watch: bool, no_progress: bool) -> None:
                     on_error=on_error,
                 )
 
+                # Report progress with active counts
+                status_reporter.update_status(StatusUpdate(
+                    state=SyncStateEnum.SYNCING,
+                    files_pending=len(queue),
+                    uploads_in_progress=len(uploaded),
+                    downloads_in_progress=len(downloaded),
+                ))
+
             # Wait for all tasks to complete
             import time
             while pool.active_count > 0:
                 time.sleep(0.1)
+                # Keep reporting during wait
+                status_reporter.update_status(StatusUpdate(
+                    state=SyncStateEnum.SYNCING,
+                    files_pending=pool.active_count,
+                ))
 
             pool.stop()
 
@@ -687,8 +709,15 @@ def sync(watch: bool, no_progress: bool) -> None:
                     f"{len(conflicts)} conflicts"
                 )
 
+            # Report final state
+            if errors:
+                status_reporter.update_status(StatusUpdate(state=SyncStateEnum.ERROR))
+            else:
+                status_reporter.update_status(StatusUpdate(state=SyncStateEnum.IDLE))
+
         except Exception as e:
             pool.stop()
+            status_reporter.update_status(StatusUpdate(state=SyncStateEnum.ERROR))
             click.echo(f"Sync error: {e}", err=True)
 
     if watch:
@@ -716,9 +745,12 @@ def sync(watch: bool, no_progress: bool) -> None:
         except KeyboardInterrupt:
             click.echo("\nStopping...")
             watcher.stop()
+            status_reporter.update_status(StatusUpdate(state=SyncStateEnum.OFFLINE))
+            status_reporter.stop()
     else:
         # Single sync
         run_sync()
+        status_reporter.stop()
 
 
 @cli.command()
