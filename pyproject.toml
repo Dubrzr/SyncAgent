@@ -161,6 +161,9 @@ warn_unused_ignores = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (100MB+ file transfers)",
+]
 
 [tool.coverage.run]
 source = ["src/syncagent"]
