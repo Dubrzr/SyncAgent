@@ -23,8 +23,6 @@ from syncagent.client.sync.queue import (
     SyncEvent,
     SyncEventSource,
     SyncEventType,
-    create_queue_callback,
-    file_change_to_sync_event,
 )
 from syncagent.client.sync.retry import (
     DEFAULT_BACKOFF_MULTIPLIER,
@@ -88,8 +86,6 @@ __all__ = [
     "SyncEvent",
     "SyncEventSource",
     "SyncEventType",
-    "create_queue_callback",
-    "file_change_to_sync_event",
     # Conflict utilities
     "generate_conflict_filename",
     "get_machine_name",

@@ -5,8 +5,6 @@ This module provides:
 - SyncEventSource: Enum for event origin (local/remote)
 - SyncEvent: Dataclass representing a sync event
 - EventQueue: Thread-safe priority queue with deduplication
-- file_change_to_sync_event: Convert FileChange to SyncEvent
-- create_queue_callback: Create a callback that injects into queue
 
 The queue enables the coordinator to process events in optimal order:
 - DELETE events have highest priority (avoid useless transfers)
@@ -14,6 +12,12 @@ The queue enables the coordinator to process events in optimal order:
 - DOWNLOAD events have lowest priority
 
 Events are deduplicated by path - only the most recent event per path is kept.
+
+Usage with FileWatcher:
+    queue = EventQueue()
+    watcher = FileWatcher(watch_path, event_queue=queue)
+    watcher.start()
+    # Events are automatically injected into the queue
 """
 
 from __future__ import annotations
@@ -472,99 +476,3 @@ class EventQueue:
                 if key in stats:
                     stats[key] += 1
             return stats
-
-
-# =============================================================================
-# Integration with FileWatcher
-# =============================================================================
-
-
-def file_change_to_sync_event(
-    change: FileChange,
-    base_path: Path,
-) -> SyncEvent | None:
-    """Convert a FileChange from the watcher to a SyncEvent.
-
-    Args:
-        change: The file change from the watcher
-        base_path: Base sync directory to compute relative path
-
-    Returns:
-        A SyncEvent, or None if the change should be ignored (e.g., directories)
-    """
-    # Import here to avoid circular imports
-    from syncagent.client.sync.watcher import ChangeType
-
-    # Skip directories - we only sync files
-    if change.is_directory:
-        return None
-
-    # Convert ChangeType to SyncEventType
-    type_mapping = {
-        ChangeType.CREATED: SyncEventType.LOCAL_CREATED,
-        ChangeType.MODIFIED: SyncEventType.LOCAL_MODIFIED,
-        ChangeType.DELETED: SyncEventType.LOCAL_DELETED,
-    }
-
-    event_type = type_mapping.get(change.change_type)
-    if event_type is None:
-        # MOVED is handled as DELETE + CREATE by the watcher
-        # but if we get it here, treat as MODIFIED
-        event_type = SyncEventType.LOCAL_MODIFIED
-
-    # Compute relative path
-    try:
-        rel_path = change.path.relative_to(base_path)
-    except ValueError:
-        logger.warning("Path %s is not relative to %s", change.path, base_path)
-        return None
-
-    # Use forward slashes for consistency
-    path_str = str(rel_path).replace("\\", "/")
-
-    return SyncEvent.create(
-        event_type=event_type,
-        path=path_str,
-        source=SyncEventSource.LOCAL,
-        metadata={
-            "absolute_path": str(change.path),
-            "timestamp": change.timestamp,
-        },
-    )
-
-
-def create_queue_callback(
-    queue: EventQueue,
-    base_path: Path,
-) -> Callable[[list[FileChange]], None]:
-    """Create a callback function for FileWatcher that injects events into the queue.
-
-    Usage:
-        queue = EventQueue()
-        callback = create_queue_callback(queue, sync_folder)
-        watcher = FileWatcher(sync_folder, on_changes=callback)
-
-    Args:
-        queue: The event queue to inject events into
-        base_path: Base sync directory
-
-    Returns:
-        A callback function compatible with FileWatcher.on_changes
-    """
-
-    def on_changes(changes: list[FileChange]) -> None:
-        """Process file changes and inject into queue."""
-        for change in changes:
-            event = file_change_to_sync_event(change, base_path)
-            if event:
-                queue.put(event)
-                logger.debug("Injected event into queue: %s", event)
-
-    return on_changes
-
-
-# Type hint imports at module level would cause circular import
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from syncagent.client.sync.watcher import FileChange

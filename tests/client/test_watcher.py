@@ -443,3 +443,129 @@ class TestSymlinkExclusion:
         # Should have change for real.txt but not symlink.txt
         paths = [c.path.name for c in changes]
         assert "symlink.txt" not in paths
+
+
+class TestFileWatcherQueueMode:
+    """Tests for FileWatcher queue mode (Phase 15+)."""
+
+    @pytest.fixture
+    def watch_dir(self, tmp_path: Path) -> Path:
+        """Create a watch directory."""
+        watch = tmp_path / "sync"
+        watch.mkdir()
+        return watch
+
+    def test_requires_callback_or_queue(self, watch_dir: Path) -> None:
+        """Should require either on_changes or event_queue."""
+        with pytest.raises(ValueError, match="Either on_changes or event_queue"):
+            FileWatcher(watch_dir)
+
+    def test_queue_mode_basic(self, watch_dir: Path) -> None:
+        """Should inject events into queue in queue mode."""
+        from syncagent.client.sync.queue import EventQueue, SyncEventType
+
+        queue = EventQueue()
+
+        with FileWatcher(watch_dir, event_queue=queue, sync_delay_s=0.1):
+            # Create a file
+            test_file = watch_dir / "queue_test.txt"
+            test_file.write_text("content")
+            time.sleep(0.5)
+
+        # Should have an event in the queue
+        assert len(queue) >= 1
+        event = queue.get(timeout=1)
+        assert event is not None
+        assert event.path == "queue_test.txt"
+        assert event.event_type in (
+            SyncEventType.LOCAL_CREATED,
+            SyncEventType.LOCAL_MODIFIED,
+        )
+
+    def test_queue_mode_multiple_files(self, watch_dir: Path) -> None:
+        """Should inject events for multiple files."""
+        from syncagent.client.sync.queue import EventQueue
+
+        queue = EventQueue()
+
+        with FileWatcher(watch_dir, event_queue=queue, sync_delay_s=0.1):
+            # Create multiple files
+            for i in range(3):
+                test_file = watch_dir / f"file{i}.txt"
+                test_file.write_text(f"content {i}")
+            time.sleep(0.5)
+
+        # Should have events for all files
+        assert len(queue) >= 3
+
+    def test_queue_mode_delete(self, watch_dir: Path) -> None:
+        """Should inject delete events."""
+        from syncagent.client.sync.queue import EventQueue, SyncEventType
+
+        queue = EventQueue()
+
+        # Create file first
+        test_file = watch_dir / "to_delete.txt"
+        test_file.write_text("content")
+
+        with FileWatcher(watch_dir, event_queue=queue, sync_delay_s=0.1):
+            # Delete the file
+            test_file.unlink()
+            time.sleep(0.5)
+
+        # Should have a delete event
+        assert len(queue) >= 1
+        event = queue.get(timeout=1)
+        assert event is not None
+        assert event.path == "to_delete.txt"
+        assert event.event_type == SyncEventType.LOCAL_DELETED
+
+    def test_queue_mode_subdirectory(self, watch_dir: Path) -> None:
+        """Should handle subdirectory paths correctly."""
+        from syncagent.client.sync.queue import EventQueue
+
+        queue = EventQueue()
+        subdir = watch_dir / "subdir"
+        subdir.mkdir()
+
+        with FileWatcher(watch_dir, event_queue=queue, sync_delay_s=0.1):
+            # Create file in subdirectory
+            test_file = subdir / "nested.txt"
+            test_file.write_text("content")
+            time.sleep(0.5)
+
+        # Path should use forward slashes
+        assert len(queue) >= 1
+        event = queue.get(timeout=1)
+        assert event is not None
+        assert event.path == "subdir/nested.txt"
+
+    def test_queue_mode_ignores_directories(self, watch_dir: Path) -> None:
+        """Should not create events for directory changes."""
+        from syncagent.client.sync.queue import EventQueue
+
+        queue = EventQueue()
+
+        with FileWatcher(watch_dir, event_queue=queue, sync_delay_s=0.1):
+            # Create a directory (not a file)
+            new_dir = watch_dir / "new_directory"
+            new_dir.mkdir()
+            time.sleep(0.5)
+
+        # Queue should be empty (directories are ignored)
+        assert len(queue) == 0
+
+    def test_queue_property(self, watch_dir: Path) -> None:
+        """Should expose event_queue property."""
+        from syncagent.client.sync.queue import EventQueue
+
+        queue = EventQueue()
+        watcher = FileWatcher(watch_dir, event_queue=queue)
+
+        assert watcher.event_queue is queue
+
+    def test_callback_mode_no_queue_property(self, watch_dir: Path) -> None:
+        """event_queue should be None in callback mode."""
+        watcher = FileWatcher(watch_dir, on_changes=lambda c: None)
+
+        assert watcher.event_queue is None

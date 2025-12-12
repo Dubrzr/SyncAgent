@@ -5,11 +5,13 @@ This module provides:
 - Debouncing: Coalesces rapid events (250ms window)
 - Sync delay: Waits 3s after last change before triggering sync
 - Ignore patterns: Respects .syncignore patterns
+- Direct EventQueue integration (optional)
 """
 
 from __future__ import annotations
 
 import fnmatch
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -34,6 +36,10 @@ from watchdog.observers import Observer
 
 if TYPE_CHECKING:
     from watchdog.observers.api import BaseObserver
+
+    from syncagent.client.sync.queue import EventQueue
+
+logger = logging.getLogger(__name__)
 
 
 class ChangeType(Enum):
@@ -283,37 +289,65 @@ class DebouncedEventHandler(FileSystemEventHandler):
 
 
 class FileWatcher:
-    """Watches a directory for file changes with debouncing."""
+    """Watches a directory for file changes with debouncing.
+
+    Can operate in two modes:
+    1. Callback mode: Calls on_changes with list of FileChange objects
+    2. Queue mode: Injects SyncEvent objects directly into an EventQueue
+
+    Queue mode is preferred for the event-driven architecture (Phase 15+).
+    """
 
     def __init__(
         self,
         watch_path: Path,
-        on_changes: Callable[[list[FileChange]], None],
+        on_changes: Callable[[list[FileChange]], None] | None = None,
         debounce_ms: int = 250,
         sync_delay_s: float = 3.0,
         ignore_patterns: list[str] | None = None,
+        *,
+        event_queue: EventQueue | None = None,
     ) -> None:
         """Initialize the file watcher.
 
         Args:
             watch_path: Directory to watch.
-            on_changes: Callback when changes are ready to sync.
+            on_changes: Callback when changes are ready to sync (callback mode).
             debounce_ms: Debounce window in milliseconds.
             sync_delay_s: Delay after last change before triggering sync.
             ignore_patterns: Additional patterns to ignore.
+            event_queue: EventQueue to inject events into (queue mode).
+
+        Note:
+            Either on_changes or event_queue must be provided.
+            If both are provided, event_queue takes precedence.
         """
         self._watch_path = Path(watch_path).resolve()
         if not self._watch_path.is_dir():
             raise ValueError(f"Watch path must be a directory: {watch_path}")
+
+        self._event_queue = event_queue
+        self._on_changes_callback = on_changes
+
+        # Validate that at least one output is configured
+        if event_queue is None and on_changes is None:
+            raise ValueError("Either on_changes or event_queue must be provided")
 
         self._ignore = IgnorePatterns(ignore_patterns)
         # Load .syncignore if it exists
         syncignore_path = self._watch_path / ".syncignore"
         self._ignore.load_from_file(syncignore_path)
 
+        # Create the appropriate callback
+        if event_queue is not None:
+            callback = self._create_queue_callback()
+        else:
+            assert on_changes is not None  # For type checker
+            callback = on_changes
+
         self._handler = DebouncedEventHandler(
             base_path=self._watch_path,
-            on_changes=on_changes,
+            on_changes=callback,
             debounce_ms=debounce_ms,
             sync_delay_s=sync_delay_s,
             ignore_patterns=self._ignore,
@@ -322,10 +356,69 @@ class FileWatcher:
         self._observer: BaseObserver = Observer()
         self._running = False
 
+    def _create_queue_callback(self) -> Callable[[list[FileChange]], None]:
+        """Create a callback that injects events into the queue."""
+        from syncagent.client.sync.queue import (
+            SyncEvent,
+            SyncEventSource,
+            SyncEventType,
+        )
+
+        def on_changes(changes: list[FileChange]) -> None:
+            assert self._event_queue is not None
+
+            for change in changes:
+                # Skip directories - we only sync files
+                if change.is_directory:
+                    continue
+
+                # Convert ChangeType to SyncEventType
+                type_mapping = {
+                    ChangeType.CREATED: SyncEventType.LOCAL_CREATED,
+                    ChangeType.MODIFIED: SyncEventType.LOCAL_MODIFIED,
+                    ChangeType.DELETED: SyncEventType.LOCAL_DELETED,
+                }
+                event_type = type_mapping.get(
+                    change.change_type, SyncEventType.LOCAL_MODIFIED
+                )
+
+                # Compute relative path
+                try:
+                    rel_path = change.path.relative_to(self._watch_path)
+                except ValueError:
+                    logger.warning(
+                        "Path %s is not relative to %s",
+                        change.path,
+                        self._watch_path,
+                    )
+                    continue
+
+                # Use forward slashes for consistency
+                path_str = str(rel_path).replace("\\", "/")
+
+                event = SyncEvent.create(
+                    event_type=event_type,
+                    path=path_str,
+                    source=SyncEventSource.LOCAL,
+                    metadata={
+                        "absolute_path": str(change.path),
+                        "timestamp": change.timestamp,
+                    },
+                )
+                self._event_queue.put(event)
+                logger.debug("Watcher injected event: %s", event)
+
+        return on_changes
+
     @property
     def watch_path(self) -> Path:
         """Get the watched directory path."""
         return self._watch_path
+
+    @property
+    def event_queue(self) -> EventQueue | None:
+        """Get the event queue (if in queue mode)."""
+        return self._event_queue
 
     @property
     def is_running(self) -> bool:
