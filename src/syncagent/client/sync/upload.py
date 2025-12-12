@@ -7,6 +7,7 @@ This module provides:
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,12 @@ if TYPE_CHECKING:
     from syncagent.client.state import SyncState
 
 logger = logging.getLogger(__name__)
+
+
+class UploadCancelledError(UploadError):
+    """Raised when an upload is cancelled."""
+
+    pass
 
 
 class FileUploader:
@@ -62,6 +69,7 @@ class FileUploader:
         local_path: Path,
         relative_path: str,
         parent_version: int | None = None,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> UploadResult:
         """Upload a file to the server with resumable chunk uploads.
 
@@ -72,12 +80,14 @@ class FileUploader:
             local_path: Absolute path to the local file.
             relative_path: Relative path for storage on server.
             parent_version: Expected current version for updates (None for new files).
+            cancel_check: Optional function that returns True if upload should be cancelled.
 
         Returns:
             UploadResult with server metadata.
 
         Raises:
             UploadError: If upload fails after all retries.
+            UploadCancelledError: If upload is cancelled.
             ConflictError: If version conflict detected.
         """
         if not local_path.exists():
@@ -117,6 +127,13 @@ class FileUploader:
         # Upload chunks that don't exist on server
         bytes_transferred = 0
         for i, chunk in enumerate(chunks):
+            # Check for cancellation before each chunk
+            if cancel_check and cancel_check():
+                logger.info(f"Upload cancelled at chunk {i + 1}/{len(chunks)}")
+                raise UploadCancelledError(
+                    f"Upload of {relative_path} cancelled at chunk {i + 1}/{len(chunks)}"
+                )
+
             # Skip already uploaded chunks
             if chunk.hash in already_uploaded:
                 bytes_transferred += len(chunk.data)

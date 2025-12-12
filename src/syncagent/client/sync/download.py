@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -25,6 +26,12 @@ if TYPE_CHECKING:
     from syncagent.client.api import ServerFile, SyncClient
 
 logger = logging.getLogger(__name__)
+
+
+class DownloadCancelledError(DownloadError):
+    """Raised when a download is cancelled."""
+
+    pass
 
 
 class FileDownloader:
@@ -54,6 +61,7 @@ class FileDownloader:
         self,
         server_file: ServerFile,
         local_path: Path,
+        cancel_check: Callable[[], bool] | None = None,
     ) -> DownloadResult:
         """Download a file from the server with atomic write.
 
@@ -64,12 +72,14 @@ class FileDownloader:
         Args:
             server_file: File metadata from server.
             local_path: Absolute path where to save the file.
+            cancel_check: Optional function that returns True if download should be cancelled.
 
         Returns:
             DownloadResult with local metadata.
 
         Raises:
             DownloadError: If download fails after all retries.
+            DownloadCancelledError: If download is cancelled.
         """
         logger.info(f"Downloading {server_file.path}")
 
@@ -87,6 +97,16 @@ class FileDownloader:
             bytes_transferred = 0
             with open(tmp_path, "wb") as f:
                 for i, chunk_hash in enumerate(chunk_hashes):
+                    # Check for cancellation before each chunk
+                    if cancel_check and cancel_check():
+                        logger.info(
+                            f"Download cancelled at chunk {i + 1}/{len(chunk_hashes)}"
+                        )
+                        raise DownloadCancelledError(
+                            f"Download of {server_file.path} cancelled "
+                            f"at chunk {i + 1}/{len(chunk_hashes)}"
+                        )
+
                     try:
                         # Download chunk with retry
                         encrypted = self._download_chunk_with_retry(chunk_hash)
@@ -112,6 +132,8 @@ class FileDownloader:
                         raise DownloadError(
                             f"Chunk {chunk_hash} not found for {server_file.path}"
                         ) from e
+                    except DownloadCancelledError:
+                        raise  # Re-raise cancellation
                     except Exception as e:
                         raise DownloadError(
                             f"Failed to download chunk {chunk_hash}: {e}"

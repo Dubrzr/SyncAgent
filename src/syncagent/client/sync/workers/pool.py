@@ -1,0 +1,343 @@
+"""Worker pool for concurrent transfer operations.
+
+This module provides:
+- WorkerPool: Manages a pool of workers for concurrent uploads/downloads
+- WorkerTask: Represents a queued task for the pool
+"""
+
+from __future__ import annotations
+
+import logging
+import queue
+import threading
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from syncagent.client.sync.types import SyncEvent, TransferType
+from syncagent.client.sync.workers.base import BaseWorker, WorkerResult
+from syncagent.client.sync.workers.delete import DeleteWorker
+from syncagent.client.sync.workers.download import DownloadWorker
+from syncagent.client.sync.workers.upload import UploadWorker
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from syncagent.client.api import SyncClient
+    from syncagent.client.state import SyncState
+
+logger = logging.getLogger(__name__)
+
+
+class PoolState(Enum):
+    """State of the worker pool."""
+
+    STOPPED = auto()
+    RUNNING = auto()
+    STOPPING = auto()
+
+
+@dataclass
+class WorkerTask:
+    """A task to be executed by the worker pool.
+
+    Attributes:
+        event: The sync event to process.
+        transfer_type: Type of transfer operation.
+        on_complete: Callback when task completes successfully.
+        on_error: Callback when task fails.
+        on_progress: Optional progress callback.
+    """
+
+    event: SyncEvent
+    transfer_type: TransferType
+    on_complete: Callable[[WorkerResult], None] | None = None
+    on_error: Callable[[str], None] | None = None
+    on_progress: Callable[[int, int], None] | None = None
+    cancel_requested: bool = field(default=False)
+
+    def request_cancel(self) -> None:
+        """Request cancellation of this task."""
+        self.cancel_requested = True
+
+
+class WorkerPool:
+    """Pool of workers for concurrent transfer operations.
+
+    Manages worker threads that process tasks from a queue. Each task
+    is assigned to a worker thread for execution.
+
+    Usage:
+        pool = WorkerPool(client, key, base_path, max_workers=4)
+        pool.start()
+
+        # Submit tasks
+        pool.submit(event, TransferType.UPLOAD, on_complete=callback)
+
+        # Stop when done
+        pool.stop()
+    """
+
+    def __init__(
+        self,
+        client: SyncClient,
+        encryption_key: bytes,
+        base_path: Path,
+        state: SyncState | None = None,
+        max_workers: int = 4,
+    ) -> None:
+        """Initialize the worker pool.
+
+        Args:
+            client: HTTP client for server communication.
+            encryption_key: 32-byte AES key for encryption/decryption.
+            base_path: Base directory for resolving relative paths.
+            state: Optional SyncState for tracking progress.
+            max_workers: Maximum concurrent workers.
+        """
+        self._client = client
+        self._key = encryption_key
+        self._base_path = base_path
+        self._state = state
+        self._max_workers = max_workers
+
+        # Pool state
+        self._pool_state = PoolState.STOPPED
+        self._lock = threading.Lock()
+
+        # Task queue
+        self._task_queue: queue.Queue[WorkerTask | None] = queue.Queue()
+
+        # Active tasks by path (for cancellation)
+        self._active_tasks: dict[str, WorkerTask] = {}
+
+        # Worker threads
+        self._workers: list[threading.Thread] = []
+
+        # Statistics
+        self._completed_count = 0
+        self._error_count = 0
+
+    @property
+    def state(self) -> PoolState:
+        """Get current pool state."""
+        return self._pool_state
+
+    @property
+    def active_count(self) -> int:
+        """Get number of active tasks."""
+        with self._lock:
+            return len(self._active_tasks)
+
+    @property
+    def queue_size(self) -> int:
+        """Get number of queued tasks."""
+        return self._task_queue.qsize()
+
+    @property
+    def completed_count(self) -> int:
+        """Get number of completed tasks."""
+        return self._completed_count
+
+    @property
+    def error_count(self) -> int:
+        """Get number of failed tasks."""
+        return self._error_count
+
+    def start(self) -> None:
+        """Start the worker pool."""
+        with self._lock:
+            if self._pool_state != PoolState.STOPPED:
+                logger.warning("Worker pool already running")
+                return
+
+            self._pool_state = PoolState.RUNNING
+
+            # Start worker threads
+            for i in range(self._max_workers):
+                thread = threading.Thread(
+                    target=self._worker_loop,
+                    name=f"WorkerPool-{i}",
+                    daemon=True,
+                )
+                thread.start()
+                self._workers.append(thread)
+
+            logger.info(f"Worker pool started with {self._max_workers} workers")
+
+    def stop(self, timeout: float = 10.0) -> None:
+        """Stop the worker pool.
+
+        Args:
+            timeout: Maximum time to wait for workers to finish.
+        """
+        with self._lock:
+            if self._pool_state == PoolState.STOPPED:
+                return
+
+            self._pool_state = PoolState.STOPPING
+            logger.info("Worker pool stopping...")
+
+            # Cancel all active tasks
+            for task in self._active_tasks.values():
+                task.request_cancel()
+
+            # Send poison pills to stop workers
+            for _ in self._workers:
+                self._task_queue.put(None)
+
+        # Wait for workers to finish
+        for worker in self._workers:
+            worker.join(timeout=timeout / len(self._workers))
+
+        with self._lock:
+            self._pool_state = PoolState.STOPPED
+            self._workers.clear()
+            logger.info("Worker pool stopped")
+
+    def submit(
+        self,
+        event: SyncEvent,
+        transfer_type: TransferType,
+        on_complete: Callable[[WorkerResult], None] | None = None,
+        on_error: Callable[[str], None] | None = None,
+        on_progress: Callable[[int, int], None] | None = None,
+    ) -> bool:
+        """Submit a task to the pool.
+
+        Args:
+            event: The sync event to process.
+            transfer_type: Type of transfer operation.
+            on_complete: Callback when task completes.
+            on_error: Callback when task fails.
+            on_progress: Optional progress callback.
+
+        Returns:
+            True if task was submitted, False if pool is not running.
+        """
+        if self._pool_state != PoolState.RUNNING:
+            logger.warning("Cannot submit task: pool not running")
+            return False
+
+        task = WorkerTask(
+            event=event,
+            transfer_type=transfer_type,
+            on_complete=on_complete,
+            on_error=on_error,
+            on_progress=on_progress,
+        )
+
+        self._task_queue.put(task)
+        logger.debug(f"Task submitted: {transfer_type.name} {event.path}")
+        return True
+
+    def cancel(self, path: str) -> bool:
+        """Cancel a task by path.
+
+        Args:
+            path: Path of the file to cancel.
+
+        Returns:
+            True if cancellation was requested, False if no active task.
+        """
+        with self._lock:
+            task = self._active_tasks.get(path)
+            if task:
+                task.request_cancel()
+                logger.info(f"Cancellation requested for: {path}")
+                return True
+            return False
+
+    def _worker_loop(self) -> None:
+        """Main loop for worker threads."""
+        while self._pool_state == PoolState.RUNNING:
+            try:
+                # Get next task (blocks until available)
+                task = self._task_queue.get(timeout=1.0)
+
+                if task is None:
+                    # Poison pill - stop worker
+                    break
+
+                self._process_task(task)
+
+            except queue.Empty:
+                continue
+            except Exception:
+                logger.exception("Unexpected error in worker loop")
+
+    def _process_task(self, task: WorkerTask) -> None:
+        """Process a single task.
+
+        Args:
+            task: The task to process.
+        """
+        path = task.event.path
+
+        # Register as active
+        with self._lock:
+            self._active_tasks[path] = task
+
+        try:
+            # Create appropriate worker
+            worker = self._create_worker(task.transfer_type)
+
+            # Execute
+            success = worker.execute(
+                event=task.event,
+                on_progress=task.on_progress,
+                cancel_check=lambda: task.cancel_requested,
+            )
+
+            if success:
+                self._completed_count += 1
+                if task.on_complete:
+                    # Get result from worker
+                    result = WorkerResult(success=True)
+                    task.on_complete(result)
+            else:
+                self._error_count += 1
+                if task.on_error:
+                    task.on_error(f"Task failed: {path}")
+
+        except Exception as e:
+            self._error_count += 1
+            logger.exception(f"Task error: {path}")
+            if task.on_error:
+                task.on_error(str(e))
+
+        finally:
+            # Unregister from active
+            with self._lock:
+                self._active_tasks.pop(path, None)
+
+    def _create_worker(self, transfer_type: TransferType) -> BaseWorker:
+        """Create a worker for the given transfer type.
+
+        Args:
+            transfer_type: Type of transfer.
+
+        Returns:
+            Appropriate worker instance.
+        """
+        if transfer_type == TransferType.UPLOAD:
+            return UploadWorker(
+                client=self._client,
+                encryption_key=self._key,
+                base_path=self._base_path,
+                sync_state=self._state,
+            )
+        elif transfer_type == TransferType.DOWNLOAD:
+            return DownloadWorker(
+                client=self._client,
+                encryption_key=self._key,
+                base_path=self._base_path,
+            )
+        elif transfer_type == TransferType.DELETE:
+            return DeleteWorker(
+                client=self._client,
+                base_path=self._base_path,
+            )
+        else:
+            raise ValueError(f"Unknown transfer type: {transfer_type}")

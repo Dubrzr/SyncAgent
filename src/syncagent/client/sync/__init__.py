@@ -6,6 +6,9 @@ This package provides:
 - SyncEngine: Coordinate push/pull synchronization
 - FileWatcher: Watch directory for changes with debouncing
 - EventQueue: Thread-safe priority queue for sync events
+- SyncCoordinator: Event-driven sync orchestrator
+- Workers: Interruptible upload/download/delete workers
+- WorkerPool: Concurrent worker management
 - Conflict detection and resolution utilities
 - Retry logic with network awareness
 
@@ -17,7 +20,10 @@ from syncagent.client.sync.conflict import (
     get_machine_name,
 )
 from syncagent.client.sync.coordinator import SyncCoordinator
-from syncagent.client.sync.download import FileDownloader
+from syncagent.client.sync.download import (
+    DownloadCancelledError,
+    FileDownloader,
+)
 from syncagent.client.sync.engine import SyncEngine
 from syncagent.client.sync.ignore import IgnorePatterns
 from syncagent.client.sync.queue import EventQueue
@@ -52,11 +58,25 @@ from syncagent.client.sync.types import (
     UploadError,
     UploadResult,
 )
-from syncagent.client.sync.upload import FileUploader
+from syncagent.client.sync.upload import FileUploader, UploadCancelledError
 from syncagent.client.sync.watcher import (
     ChangeType,
     FileChange,
     FileWatcher,
+)
+from syncagent.client.sync.workers import (
+    BaseWorker,
+    CancelledException,
+    DeleteResult,
+    DeleteWorker,
+    DownloadWorker,
+    PoolState,
+    UploadWorker,
+    WorkerContext,
+    WorkerPool,
+    WorkerResult,
+    WorkerState,
+    WorkerTask,
 )
 
 __all__ = [
@@ -74,6 +94,7 @@ __all__ = [
     "ConflictCallback",
     "ConflictInfo",
     "DownloadError",
+    "DownloadCancelledError",
     "DownloadResult",
     "ProgressCallback",
     "SyncError",
@@ -83,6 +104,7 @@ __all__ = [
     "SyncProgress",
     "SyncResult",
     "UploadError",
+    "UploadCancelledError",
     "UploadResult",
     # Classes
     "FileDownloader",
@@ -96,6 +118,19 @@ __all__ = [
     "TransferState",
     "TransferStatus",
     "TransferType",
+    # Workers
+    "BaseWorker",
+    "CancelledException",
+    "DeleteResult",
+    "DeleteWorker",
+    "DownloadWorker",
+    "PoolState",
+    "UploadWorker",
+    "WorkerContext",
+    "WorkerPool",
+    "WorkerResult",
+    "WorkerState",
+    "WorkerTask",
     # Conflict utilities
     "generate_conflict_filename",
     "get_machine_name",
