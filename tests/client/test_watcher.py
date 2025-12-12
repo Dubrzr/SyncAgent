@@ -236,22 +236,30 @@ class TestFileWatcher:
         self, watch_dir: Path, event_queue: EventQueue
     ) -> None:
         """Should detect when a file is deleted."""
-        # Create file first
+        # Create file BEFORE starting watcher to avoid creation event
         test_file = watch_dir / "todelete.txt"
         test_file.write_text("content")
+        time.sleep(0.1)  # Ensure file is written
 
         with FileWatcher(watch_dir, event_queue, sync_delay_s=0.1):
-            time.sleep(0.2)  # Wait for watcher to be ready
+            time.sleep(0.3)  # Wait for watcher to be ready
 
             # Delete the file
             test_file.unlink()
 
-            # Wait for deletion event (may take longer)
-            event = event_queue.get(timeout=5.0)
+            # Collect events until we find deletion or timeout
+            events = []
+            for _ in range(10):
+                event = event_queue.get(timeout=1.0)
+                if event is None:
+                    break
+                events.append(event)
+                if event.path == "todelete.txt" and event.event_type == SyncEventType.LOCAL_DELETED:
+                    break
 
-        assert event is not None
-        assert event.path == "todelete.txt"
-        assert event.event_type == SyncEventType.LOCAL_DELETED
+        # Find the deletion event
+        delete_events = [e for e in events if e.path == "todelete.txt" and e.event_type == SyncEventType.LOCAL_DELETED]
+        assert len(delete_events) >= 1, f"Expected LOCAL_DELETED, got events: {events}"
 
     def test_ignores_tmp_files(
         self, watch_dir: Path, event_queue: EventQueue
@@ -322,11 +330,14 @@ class TestFileWatcher:
 
     def test_loads_syncignore(self, watch_dir: Path, event_queue: EventQueue) -> None:
         """Should load and respect .syncignore patterns."""
-        # Create .syncignore
+        # Create .syncignore BEFORE starting watcher
         syncignore = watch_dir / ".syncignore"
         syncignore.write_text("*.ignored\n")
+        time.sleep(0.1)
 
         with FileWatcher(watch_dir, event_queue, sync_delay_s=0.1):
+            time.sleep(0.2)  # Wait for watcher to initialize
+
             # Create an ignored file
             ignored_file = watch_dir / "test.ignored"
             ignored_file.write_text("should be ignored")
@@ -335,11 +346,19 @@ class TestFileWatcher:
             normal_file = watch_dir / "normal.txt"
             normal_file.write_text("should be detected")
 
-            # Wait for event
-            event = event_queue.get(timeout=3.0)
+            # Collect events
+            events = []
+            for _ in range(5):
+                event = event_queue.get(timeout=1.0)
+                if event is None:
+                    break
+                events.append(event)
 
-        assert event is not None
-        assert event.path == "normal.txt"
+        # Should have at least one event for normal.txt, and none for test.ignored
+        normal_events = [e for e in events if e.path == "normal.txt"]
+        ignored_events = [e for e in events if e.path == "test.ignored"]
+        assert len(normal_events) >= 1, f"Expected normal.txt event, got: {events}"
+        assert len(ignored_events) == 0, f"Should not have test.ignored event, got: {events}"
 
 
 class TestSymlinkExclusion:
