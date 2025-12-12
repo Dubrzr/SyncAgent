@@ -37,7 +37,7 @@
         {% if loop.last %}
         <span class="text-apple-gray-900 font-medium">{{ crumb.name }}</span>
         {% else %}
-        <a href="/?path={{ crumb.path }}" class="text-apple-gray-500 hover:text-apple-blue">{{ crumb.name }}</a>
+        <a href="/?path={{ crumb.path | urlencode }}" class="text-apple-gray-500 hover:text-apple-blue">{{ crumb.name }}</a>
         {% endif %}
         {% endfor %}
     </nav>
@@ -71,7 +71,7 @@
                 {% if current_path %}
                 <tr class="hover:bg-apple-gray-50/50">
                     <td class="px-6 py-3" colspan="5">
-                        <a href="/?path={{ '/'.join(current_path.split('/')[:-1]) }}"
+                        <a href="/?path={{ '/'.join(current_path.split('/')[:-1]) | urlencode }}"
                            class="flex items-center gap-3 text-apple-gray-500 hover:text-apple-blue">
                             <div class="w-10 h-10 bg-apple-gray-100 rounded-lg flex items-center justify-center">
                                 <svg class="w-5 h-5 text-apple-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -88,7 +88,7 @@
                 {% for folder in folders %}
                 <tr class="hover:bg-apple-gray-50/50">
                     <td class="px-6 py-4">
-                        <a href="/?path={{ current_path ~ '/' ~ folder.name if current_path else folder.name }}"
+                        <a href="/?path={{ (current_path ~ '/' ~ folder.name if current_path else folder.name) | urlencode }}"
                            class="flex items-center gap-3 group">
                             <div class="w-10 h-10 bg-blue-50 rounded-lg flex items-center justify-center">
                                 <svg class="w-5 h-5 text-apple-blue" fill="currentColor" viewBox="0 0 20 20">
@@ -154,7 +154,7 @@
                                 {% endif %}
                             </div>
                             <div>
-                                <a href="syncfile://open?path={{ item.path }}"
+                                <a href="syncfile://open?path={{ item.path | urlencode }}"
                                    class="text-sm font-medium text-apple-gray-900 hover:text-apple-blue">
                                     {{ item.name }}
                                 </a>
@@ -173,8 +173,8 @@
                         </span>
                     </td>
                     <td class="px-6 py-4 text-right">
-                        <form action="/api/files/{{ item.path }}" method="POST"
-                              hx-delete="/api/files/{{ item.path }}"
+                        <form action="/api/files/{{ item.path | urlencode }}" method="POST"
+                              hx-delete="/api/files/{{ item.path | urlencode }}"
                               hx-confirm="Are you sure you want to delete this file?"
                               hx-swap="outerHTML swap:1s"
                               class="inline">
