@@ -29,7 +29,7 @@
 | 12 | Resume Sync | Done |
 | 13 | Integration Tests | Done |
 | 14 | Sync Optimizations | In Progress (14.2 done) |
-| 15 | Event-Driven Sync Architecture | In Progress (15.1, 15.2, 15.3 done) |
+| 15 | Event-Driven Sync Architecture | In Progress (15.1-15.3, 15.7 done) |
 
 ---
 
@@ -400,10 +400,17 @@
   - Vitesse de transfert
 - [ ] **Tray Icon** : Clic gauche → ouvre dashboard
 
-### 15.7 - Conflict Resolution Améliorée
+### 15.7 - Conflict Resolution Améliorée ✅
 
-- [ ] **Détection précoce** : Détecter conflit AVANT de terminer le transfert
-- [ ] **Versioning in-flight** : Savoir quelle version est en cours de transfert
+- [x] **Détection précoce** : Détecter conflit AVANT de terminer le transfert
+  - Pre-upload version check: vérifie version serveur avant upload
+  - Mid-transfer version check: vérification périodique pendant longs uploads
+  - EarlyConflictError exception avec détails (version attendue vs actuelle)
+- [x] **Versioning in-flight** : Savoir quelle version est en cours de transfert
+  - ConflictType enum: PRE_TRANSFER, MID_TRANSFER, POST_TRANSFER, CONCURRENT_EVENT
+  - TransferState.base_version: version serveur au début du transfert
+  - TransferState.detected_server_version: version serveur au moment du conflit
+  - Auto-cancel on conflict detection
 
 ### Tests & Qualité
 
