@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import sys
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -22,11 +23,43 @@ from syncagent.server.database import Database
 from syncagent.server.storage import ChunkStorage, create_storage
 from syncagent.server.web import router as web_router
 
-logger = logging.getLogger(__name__)
-
 # Configuration - can be overridden via environment variables
 DB_PATH = Path("syncagent.db")
+LOG_PATH = Path("syncagent-server.log")
 STORAGE_CONFIG: dict[str, str | None] = {"type": "local", "local_path": "storage"}
+
+
+def setup_logging(log_path: Path) -> None:
+    """Configure logging to output to both file and stdout.
+
+    Args:
+        log_path: Path to the log file.
+    """
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    formatter = logging.Formatter(log_format)
+
+    # Root logger for syncagent
+    root_logger = logging.getLogger("syncagent")
+    root_logger.setLevel(logging.INFO)
+
+    # Stdout handler
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setFormatter(formatter)
+    root_logger.addHandler(stdout_handler)
+
+    # File handler
+    file_handler = logging.FileHandler(log_path, encoding="utf-8")
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+
+    # Also capture uvicorn logs to file
+    for uvicorn_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        uvicorn_logger = logging.getLogger(uvicorn_name)
+        uvicorn_logger.addHandler(file_handler)
+
+
+setup_logging(LOG_PATH)
+logger = logging.getLogger(__name__)
 
 
 def create_app(db: Database, storage: ChunkStorage | None = None) -> FastAPI:
@@ -47,15 +80,16 @@ def create_app(db: Database, storage: ChunkStorage | None = None) -> FastAPI:
         """Application lifespan handler for startup/shutdown."""
         # Startup
         db_path = getattr(db, "_db_path", "in-memory")
-        print(f"\n{'='*60}")
-        print("SyncAgent Server Starting")
-        print(f"{'='*60}")
-        print(f"  Database: {db_path}")
+        logger.info("=" * 60)
+        logger.info("SyncAgent Server Starting")
+        logger.info("=" * 60)
+        logger.info("  Database: %s", db_path)
         if storage:
-            print(f"  Storage:  {storage.location}")
+            logger.info("  Storage:  %s", storage.location)
         else:
-            print("  Storage:  None (storage disabled)")
-        print(f"{'='*60}\n")
+            logger.info("  Storage:  None (storage disabled)")
+        logger.info("  Logs:     %s", LOG_PATH.absolute())
+        logger.info("=" * 60)
 
         yield
 
