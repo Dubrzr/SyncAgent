@@ -3,9 +3,12 @@
 This module provides:
 - Key derivation using Argon2id
 - Authenticated encryption using AES-256-GCM
+- File hashing with SHA-256
 """
 
+import hashlib
 import os
+from pathlib import Path
 
 from argon2.low_level import Type, hash_secret_raw
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -84,3 +87,21 @@ def decrypt_chunk(encrypted: bytes, key: bytes) -> bytes:
     ciphertext = encrypted[NONCE_SIZE:]
     aesgcm = AESGCM(key)
     return aesgcm.decrypt(nonce, ciphertext, None)
+
+
+def compute_file_hash(path: Path) -> str:
+    """Compute SHA-256 hash of a file.
+
+    Reads the file in chunks to handle large files efficiently.
+
+    Args:
+        path: Path to the file to hash.
+
+    Returns:
+        Hexadecimal SHA-256 hash string.
+    """
+    hasher = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(8192), b""):
+            hasher.update(block)
+    return hasher.hexdigest()

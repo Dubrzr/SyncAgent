@@ -55,6 +55,15 @@ Thumbs.db
 *.db-shm
 *.db-wal
 
+# Data
+
+chunks/
+storage/
+
 # AI
 
 .claude
+
+# Logs
+
+*.log

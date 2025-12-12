@@ -10,6 +10,7 @@ from syncagent.core.chunking import (
     get_chunk_hash,
 )
 from syncagent.core.crypto import (
+    compute_file_hash,
     decrypt_chunk,
     derive_key,
     encrypt_chunk,
@@ -26,6 +27,7 @@ __all__ = [
     "chunk_file",
     "get_chunk_hash",
     # Crypto
+    "compute_file_hash",
     "decrypt_chunk",
     "derive_key",
     "encrypt_chunk",
