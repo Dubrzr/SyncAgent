@@ -857,7 +857,7 @@ class TestAtomicDownload:
         server_file.size = 10
 
         mock_client.get_file_chunks.return_value = ["hash"]
-        mock_client.download_chunk.side_effect = ConnectionError("Network error")
+        mock_client.download_chunk.side_effect = NotFoundError("Not found")
 
         downloader = FileDownloader(mock_client, encryption_key)
         local_path = tmp_path / "test.txt"
