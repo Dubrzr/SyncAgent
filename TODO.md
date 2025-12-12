@@ -29,7 +29,7 @@
 | 12 | Resume Sync | Done |
 | 13 | Integration Tests | Done |
 | 14 | Sync Optimizations | Pending |
-| 15 | Event-Driven Sync Architecture | Pending |
+| 15 | Event-Driven Sync Architecture | In Progress (15.1, 15.2 done) |
 
 ---
 
@@ -303,26 +303,27 @@
        └────────────┘  └────────────┘  └────────────┘
 ```
 
-### 15.1 - Event Queue System
+### 15.1 - Event Queue System [DONE]
 
-- [ ] **SyncEvent dataclass** : Représente un événement de sync (type, path, source, timestamp, priority)
-- [ ] **EventQueue class** : Queue thread-safe avec priorités
+- [x] **SyncEvent dataclass** : Représente un événement de sync (type, path, source, timestamp, priority)
+- [x] **EventQueue class** : Queue thread-safe avec priorités
   - Priorités : DELETE > UPLOAD > DOWNLOAD (éviter transferts inutiles)
   - Deduplication : Un seul event par path (le plus récent)
   - Persistence optionnelle (SQLite) pour survie aux redémarrages
-- [ ] **Event types** :
+- [x] **Event types** :
   - `LOCAL_CREATED`, `LOCAL_MODIFIED`, `LOCAL_DELETED`
   - `REMOTE_CREATED`, `REMOTE_MODIFIED`, `REMOTE_DELETED`
   - `TRANSFER_COMPLETE`, `TRANSFER_FAILED`
+- [x] **FileWatcher integration** : Direct injection into EventQueue
 
-### 15.2 - Coordinator (Orchestrateur)
+### 15.2 - Coordinator (Orchestrateur) [DONE]
 
-- [ ] **SyncCoordinator class** : Chef d'orchestre central
+- [x] **SyncCoordinator class** : Chef d'orchestre central
   - Lit les events de la queue
   - Applique les règles de décision (matrice ci-dessous)
   - Dispatche aux workers appropriés
   - Peut annuler des workers en cours si nécessaire
-- [ ] **Matrice de décision** :
+- [x] **Matrice de décision** :
   ```
   | Event           | En cours         | Action                              |
   |-----------------|------------------|-------------------------------------|
@@ -333,7 +334,8 @@
   | LOCAL_MODIFIED  | Aucun            | Ajouter upload à la queue           |
   | REMOTE_MODIFIED | Aucun            | Ajouter download à la queue         |
   ```
-- [ ] **Transfer tracking** : Suivi des transferts en cours (path → worker)
+- [x] **Transfer tracking** : Suivi des transferts en cours (path → worker)
+- [x] **50 tests** : EventQueue (29) + Coordinator (21)
 
 ### 15.3 - Workers Interruptibles
 
