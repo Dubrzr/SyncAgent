@@ -15,6 +15,10 @@ Delete and recreate:
 Simultaneous deletions:
     - [x] Both clients delete same file
     - [x] One deletes while other modifies
+
+Admin (WUI) deletions:
+    - [x] Admin deletes file → client syncs and removes local file
+    - [x] Admin deletes folder → client syncs and removes all local files
 """
 
 from __future__ import annotations
@@ -286,3 +290,95 @@ class TestSimultaneousDeletions:
         do_sync(cli_runner, config_b)
 
         # Should handle gracefully
+
+
+class TestAdminDeletions:
+    """Tests for admin (WUI) deletion propagating to clients."""
+
+    def test_admin_deletes_file_syncs_to_client(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        test_server: TestServer,
+    ) -> None:
+        """Admin deletes file via server → client syncs and removes local file."""
+        config_a, sync_a = setup_client(cli_runner, tmp_path, test_server, "client-a")
+
+        # Client uploads a file
+        (sync_a / "admin_delete_me.txt").write_text("Delete via admin")
+        do_sync(cli_runner, config_a)
+        assert (sync_a / "admin_delete_me.txt").exists()
+
+        # Admin deletes via server (simulate WUI deletion)
+        test_server.db.delete_file("admin_delete_me.txt", machine_id=None)
+
+        # Client syncs again
+        do_sync(cli_runner, config_a)
+
+        # File should be removed locally
+        assert not (sync_a / "admin_delete_me.txt").exists()
+
+    def test_admin_deletes_folder_syncs_to_client(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        test_server: TestServer,
+    ) -> None:
+        """Admin deletes folder via server → client syncs and removes all local files."""
+        config_a, sync_a = setup_client(cli_runner, tmp_path, test_server, "client-a")
+
+        # Client uploads multiple files in a folder
+        (sync_a / "admin_folder").mkdir()
+        (sync_a / "admin_folder" / "file1.txt").write_text("File 1")
+        (sync_a / "admin_folder" / "file2.txt").write_text("File 2")
+        (sync_a / "admin_folder" / "sub").mkdir()
+        (sync_a / "admin_folder" / "sub" / "nested.txt").write_text("Nested")
+        do_sync(cli_runner, config_a)
+
+        # Verify files exist
+        assert (sync_a / "admin_folder" / "file1.txt").exists()
+        assert (sync_a / "admin_folder" / "file2.txt").exists()
+        assert (sync_a / "admin_folder" / "sub" / "nested.txt").exists()
+
+        # Admin deletes folder via server (using smart delete_file)
+        deleted_count = test_server.db.delete_file("admin_folder", machine_id=None)
+        assert deleted_count == 3  # All 3 files deleted
+
+        # Client syncs again
+        do_sync(cli_runner, config_a)
+
+        # All files should be removed locally
+        assert not (sync_a / "admin_folder" / "file1.txt").exists()
+        assert not (sync_a / "admin_folder" / "file2.txt").exists()
+        assert not (sync_a / "admin_folder" / "sub" / "nested.txt").exists()
+
+    def test_admin_delete_propagates_to_multiple_clients(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        test_server: TestServer,
+    ) -> None:
+        """Admin deletion should propagate to all connected clients."""
+        config_a, sync_a = setup_client(cli_runner, tmp_path, test_server, "client-a")
+        config_b, sync_b = setup_client(
+            cli_runner, tmp_path, test_server, "client-b", import_key_from=config_a
+        )
+
+        # Client A uploads a file
+        (sync_a / "shared_file.txt").write_text("Shared content")
+        do_sync(cli_runner, config_a)
+
+        # Client B syncs to get the file
+        do_sync(cli_runner, config_b)
+        assert (sync_b / "shared_file.txt").exists()
+
+        # Admin deletes via server
+        test_server.db.delete_file("shared_file.txt", machine_id=None)
+
+        # Both clients sync
+        do_sync(cli_runner, config_a)
+        do_sync(cli_runner, config_b)
+
+        # File should be removed on both clients
+        assert not (sync_a / "shared_file.txt").exists()
+        assert not (sync_b / "shared_file.txt").exists()
