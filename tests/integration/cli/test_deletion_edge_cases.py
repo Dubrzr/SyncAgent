@@ -19,6 +19,10 @@ Simultaneous deletions:
 Admin (WUI) deletions:
     - [x] Admin deletes file → client syncs and removes local file
     - [x] Admin deletes folder → client syncs and removes all local files
+
+Restore from trash:
+    - [x] Admin restores file → client syncs and gets file back
+    - [x] Admin restores file → multiple clients get file back
 """
 
 from __future__ import annotations
@@ -382,3 +386,76 @@ class TestAdminDeletions:
         # File should be removed on both clients
         assert not (sync_a / "shared_file.txt").exists()
         assert not (sync_b / "shared_file.txt").exists()
+
+
+class TestRestoreFromTrash:
+    """Tests for restoring files from trash syncing to clients."""
+
+    def test_restore_file_syncs_to_client(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        test_server: TestServer,
+    ) -> None:
+        """Admin restores file from trash → client syncs and gets file back."""
+        config_a, sync_a = setup_client(cli_runner, tmp_path, test_server, "client-a")
+
+        # Client uploads a file
+        (sync_a / "restore_me.txt").write_text("Restore this content")
+        do_sync(cli_runner, config_a)
+
+        # Admin deletes via server
+        test_server.db.delete_file("restore_me.txt", machine_id=None)
+
+        # Client syncs - file should be removed
+        do_sync(cli_runner, config_a)
+        assert not (sync_a / "restore_me.txt").exists()
+
+        # Admin restores from trash
+        restored = test_server.db.restore_file_by_path("restore_me.txt", machine_id=None)
+        assert restored
+
+        # Client syncs again - file should be back
+        do_sync(cli_runner, config_a)
+        assert (sync_a / "restore_me.txt").exists()
+        assert (sync_a / "restore_me.txt").read_text() == "Restore this content"
+
+    def test_restore_propagates_to_multiple_clients(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        test_server: TestServer,
+    ) -> None:
+        """Restored file should propagate to all connected clients."""
+        config_a, sync_a = setup_client(cli_runner, tmp_path, test_server, "client-a")
+        config_b, sync_b = setup_client(
+            cli_runner, tmp_path, test_server, "client-b", import_key_from=config_a
+        )
+
+        # Client A uploads a file
+        (sync_a / "shared_restore.txt").write_text("Shared content")
+        do_sync(cli_runner, config_a)
+
+        # Client B syncs to get the file
+        do_sync(cli_runner, config_b)
+        assert (sync_b / "shared_restore.txt").exists()
+
+        # Admin deletes via server
+        test_server.db.delete_file("shared_restore.txt", machine_id=None)
+
+        # Both clients sync - file removed
+        do_sync(cli_runner, config_a)
+        do_sync(cli_runner, config_b)
+        assert not (sync_a / "shared_restore.txt").exists()
+        assert not (sync_b / "shared_restore.txt").exists()
+
+        # Admin restores
+        test_server.db.restore_file_by_path("shared_restore.txt", machine_id=None)
+
+        # Both clients sync - file should be back
+        do_sync(cli_runner, config_a)
+        do_sync(cli_runner, config_b)
+        assert (sync_a / "shared_restore.txt").exists()
+        assert (sync_b / "shared_restore.txt").exists()
+        assert (sync_a / "shared_restore.txt").read_text() == "Shared content"
+        assert (sync_b / "shared_restore.txt").read_text() == "Shared content"

@@ -603,30 +603,76 @@ class Database:
     # Alias for web UI
     list_deleted_files = list_trash
 
-    def restore_file(self, file_id: int) -> None:
+    def restore_file(self, file_id: int, machine_id: int | None = None) -> bool:
         """Restore a file from trash.
 
         Args:
             file_id: File ID.
+            machine_id: ID of machine restoring (None uses 'server' machine).
+
+        Returns:
+            True if file was restored, False if not found.
         """
+        # Use server machine for admin restores
+        actual_machine_id = machine_id
+        if actual_machine_id is None:
+            server_machine = self.get_or_create_server_machine()
+            actual_machine_id = server_machine.id
+
         with self._session() as session:
             file = session.get(FileMetadata, file_id)
-            if file:
+            if file and file.deleted_at is not None:
                 file.deleted_at = None
-                session.commit()
+                file.version += 1
 
-    def restore_file_by_path(self, path: str) -> None:
+                # Log change so clients see the restore
+                change = ChangeLog(
+                    file_id=file.id,
+                    file_path=file.path,
+                    action="CREATED",  # Treat restore as re-creation
+                    version=file.version,
+                    machine_id=actual_machine_id,
+                )
+                session.add(change)
+                session.commit()
+                return True
+            return False
+
+    def restore_file_by_path(self, path: str, machine_id: int | None = None) -> bool:
         """Restore a file from trash by path.
 
         Args:
             path: File path.
+            machine_id: ID of machine restoring (None uses 'server' machine).
+
+        Returns:
+            True if file was restored, False if not found.
         """
+        # Use server machine for admin restores
+        actual_machine_id = machine_id
+        if actual_machine_id is None:
+            server_machine = self.get_or_create_server_machine()
+            actual_machine_id = server_machine.id
+
         with self._session() as session:
             stmt = select(FileMetadata).where(FileMetadata.path == path)
             file = session.execute(stmt).scalar_one_or_none()
-            if file:
+            if file and file.deleted_at is not None:
                 file.deleted_at = None
+                file.version += 1
+
+                # Log change so clients see the restore
+                change = ChangeLog(
+                    file_id=file.id,
+                    file_path=file.path,
+                    action="CREATED",  # Treat restore as re-creation
+                    version=file.version,
+                    machine_id=actual_machine_id,
+                )
+                session.add(change)
                 session.commit()
+                return True
+            return False
 
     def permanently_delete_file(self, file_id: int) -> list[str]:
         """Permanently delete a file.
