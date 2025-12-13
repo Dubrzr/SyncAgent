@@ -8,6 +8,7 @@ This module provides:
 from __future__ import annotations
 
 import logging
+import os
 import queue
 import threading
 from dataclasses import dataclass, field
@@ -69,7 +70,7 @@ class WorkerPool:
     is assigned to a worker thread for execution.
 
     Usage:
-        pool = WorkerPool(client, key, base_path, max_workers=4)
+        pool = WorkerPool(client, key, base_path)  # Uses CPU count
         pool.start()
 
         # Submit tasks
@@ -85,7 +86,7 @@ class WorkerPool:
         encryption_key: bytes,
         base_path: Path,
         state: SyncState | None = None,
-        max_workers: int = 4,
+        max_workers: int | None = None,
     ) -> None:
         """Initialize the worker pool.
 
@@ -94,13 +95,13 @@ class WorkerPool:
             encryption_key: 32-byte AES key for encryption/decryption.
             base_path: Base directory for resolving relative paths.
             state: Optional SyncState for tracking progress.
-            max_workers: Maximum concurrent workers.
+            max_workers: Maximum concurrent workers. Defaults to CPU count.
         """
         self._client = client
         self._key = encryption_key
         self._base_path = base_path
         self._state = state
-        self._max_workers = max_workers
+        self._max_workers = max_workers or os.cpu_count() or 4
 
         # Pool state
         self._pool_state = PoolState.STOPPED

@@ -578,7 +578,6 @@ def sync(watch: bool, no_progress: bool) -> None:
         encryption_key=keystore.encryption_key,
         base_path=sync_folder,
         state=state,
-        max_workers=4,
     )
 
     # Track results
