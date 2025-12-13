@@ -19,7 +19,11 @@ Low-level transfer:
 All public symbols are re-exported here for backwards compatibility.
 """
 
-from syncagent.client.sync.change_scanner import ChangeScanner
+from syncagent.client.sync.change_scanner import (
+    ChangeScanner,
+    LocalChanges,
+    RemoteChanges,
+)
 from syncagent.client.sync.conflict import (
     generate_conflict_filename,
     get_machine_name,
@@ -113,6 +117,8 @@ __all__ = [
     "UploadResult",
     # Classes
     "ChangeScanner",
+    "LocalChanges",
+    "RemoteChanges",
     "FileDownloader",
     "FileUploader",
     # Event Queue & Coordinator
