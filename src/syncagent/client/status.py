@@ -16,7 +16,7 @@ import logging
 import ssl
 import threading
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import websockets
 from websockets.exceptions import WebSocketException
@@ -216,9 +216,11 @@ class StatusReporter:
 
         # Send immediately if connected
         if self._connected and self._loop:
-            asyncio.run_coroutine_threadsafe(
+            future = asyncio.run_coroutine_threadsafe(
                 self._send_status(), self._loop
             )
+            # Don't block, but log any errors
+            future.add_done_callback(self._on_send_complete)
 
     def report_idle(self) -> None:
         """Report idle state."""
@@ -253,6 +255,13 @@ class StatusReporter:
     def report_error(self) -> None:
         """Report error state."""
         self.update_status(StatusUpdate(state=SyncState.ERROR))
+
+    def _on_send_complete(self, future: Any) -> None:
+        """Callback when send completes."""
+        try:
+            future.result()
+        except Exception as e:
+            logger.warning(f"Failed to send status update: {e}")
 
     def _run_loop(self) -> None:
         """Run the async event loop in a thread."""
@@ -373,6 +382,7 @@ class StatusReporter:
     async def _send_status(self) -> None:
         """Send current status to server."""
         if not self._connected or not self._ws:
+            logger.debug("Cannot send status: not connected")
             return
 
         with self._status_lock:
@@ -380,9 +390,14 @@ class StatusReporter:
 
         try:
             await self._ws.send(json.dumps(message))
-            logger.debug(f"Status sent: {message['state']}")
+            logger.debug(
+                f"Status sent: state={message['state']}, "
+                f"pending={message.get('files_pending', 0)}, "
+                f"up_speed={message.get('upload_speed', 0)}"
+            )
         except WebSocketException as e:
             logger.warning(f"Failed to send status: {e}")
+            self._connected = False
 
     async def _handle_message(self, message: str) -> None:
         """Handle incoming message from server.
