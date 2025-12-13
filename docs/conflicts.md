@@ -83,7 +83,7 @@ except ConflictError as e:
 ```python
 # Avant de commencer l'upload, dans UploadWorker._do_work()
 if event.event_type == SyncEventType.LOCAL_MODIFIED:
-    server_file = client.get_file(path)
+    server_file = client.get_file_metadata(path)
     expected_version = event.metadata.get("parent_version")
 
     if expected_version and server_file.version != expected_version:

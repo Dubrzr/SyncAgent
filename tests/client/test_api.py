@@ -187,7 +187,7 @@ class TestSyncClient:
         )
 
         with HTTPClient(make_config()) as client:
-            file = client.get_file("docs/readme.txt")
+            file = client.get_file_metadata("docs/readme.txt")
 
         assert file.path == "docs/readme.txt"
         assert file.size == 1024
@@ -201,7 +201,7 @@ class TestSyncClient:
         )
 
         with HTTPClient(make_config()) as client, pytest.raises(NotFoundError):
-            client.get_file("missing.txt")
+            client.get_file_metadata("missing.txt")
 
     def test_create_file(self, httpx_mock) -> None:  # type: ignore[no-untyped-def]
         """Should create file on server."""

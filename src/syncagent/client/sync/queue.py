@@ -179,18 +179,19 @@ class EventQueue:
     def put(self, event: SyncEvent) -> bool:
         """Add or update an event in the queue.
 
-        If an event for this path already exists, it is replaced.
-        This implements deduplication - only the latest event per path is kept.
+        If an event for this path already exists, uses mtime-aware deduplication:
+        - Compare file mtime from metadata (for LOCAL events)
+        - Keep the event with the most recent mtime
+        - If same mtime, keep the most recent event timestamp
 
-        Conflict handling is NOT done here - it's handled at execution time by
-        workers (check_download_conflict, resolve_upload_conflict) which can
-        detect modifications that occurred between queuing and execution.
+        This prevents race conditions where a scan might emit an event with
+        stale mtime after a watcher has already emitted one with current mtime.
 
         Args:
             event: The event to add
 
         Returns:
-            True if event was added, False if queue is full
+            True if event was added/accepted, False if queue is full
 
         Raises:
             RuntimeError: If queue is closed
@@ -212,14 +213,41 @@ class EventQueue:
                 )
                 return False
 
-            # Deduplication: replace existing event for this path
+            # Deduplication with mtime-awareness
             old_event = self._events.get(event.path)
             if old_event:
+                # mtime-aware deduplication for LOCAL events
+                old_mtime = old_event.metadata.get("mtime")
+                new_mtime = event.metadata.get("mtime")
+
+                if old_mtime is not None and new_mtime is not None:
+                    # Both have mtime - compare file modification times
+                    if new_mtime < old_mtime:
+                        # New event has older mtime - keep old event
+                        logger.debug(
+                            "Ignoring event with older mtime for %s: new_mtime=%.3f < old_mtime=%.3f",
+                            event.path,
+                            new_mtime,
+                            old_mtime,
+                        )
+                        return True  # Event "accepted" but not stored
+
+                    if new_mtime == old_mtime and event.timestamp <= old_event.timestamp:
+                        # Same mtime - keep the more recent event timestamp
+                        logger.debug(
+                            "Ignoring event with same mtime but older timestamp for %s",
+                            event.path,
+                        )
+                        return True
+
+                # Different mtime (new > old) or missing mtime - replace
                 logger.debug(
-                    "Replacing event for %s: %s -> %s",
+                    "Replacing event for %s: %s -> %s (mtime: %s -> %s)",
                     event.path,
                     old_event.event_type.name,
                     event.event_type.name,
+                    old_mtime,
+                    new_mtime,
                 )
 
             self._events[event.path] = event

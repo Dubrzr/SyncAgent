@@ -17,11 +17,12 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from syncagent.client.sync.retry import NETWORK_EXCEPTIONS, wait_for_network
 from syncagent.client.sync.types import SyncEvent, TransferType
 from syncagent.client.sync.workers.base import BaseWorker, WorkerResult
-from syncagent.client.sync.workers.delete import DeleteWorker
-from syncagent.client.sync.workers.download import DownloadWorker
-from syncagent.client.sync.workers.upload import UploadWorker
+from syncagent.client.sync.workers.delete_worker import DeleteWorker
+from syncagent.client.sync.workers.download_worker import DownloadWorker
+from syncagent.client.sync.workers.upload_worker import UploadWorker
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -350,7 +351,9 @@ class WorkerPool:
                 logger.exception("Unexpected error in worker loop")
 
     def _process_task(self, task: WorkerTask) -> None:
-        """Process a single task.
+        """Process a single task with network-aware retry.
+
+        On network errors, waits for network to recover and re-queues the task.
 
         Args:
             task: The task to process.
@@ -403,6 +406,38 @@ class WorkerPool:
                 if task.on_error:
                     task.on_error(f"Task failed: {path}")
 
+        except NETWORK_EXCEPTIONS as e:
+            # Network error - wait for network and re-queue
+            logger.warning(f"{transfer_type.name.lower()} worker failed: {e}")
+
+            # Unregister from active before waiting
+            with self._lock:
+                self._active_tasks.pop(path, None)
+                if transfer_type == TransferType.UPLOAD:
+                    self._active_uploads -= 1
+                elif transfer_type == TransferType.DOWNLOAD:
+                    self._active_downloads -= 1
+
+            # Don't retry if pool is stopping or task was cancelled
+            if self._pool_state != PoolState.RUNNING or task.cancel_requested:
+                if task.on_error:
+                    task.on_error(str(e))
+                return
+
+            # Wait for network to recover (blocking)
+            logger.info(f"Waiting for network to recover before retrying {path}...")
+            wait_for_network(
+                self._client,
+                on_waiting=lambda: logger.debug("Still waiting for network..."),
+                on_restored=lambda: logger.info("Network restored, retrying task"),
+            )
+
+            # Re-queue the task (reset progress tracking)
+            if self._pool_state == PoolState.RUNNING:
+                logger.info(f"Re-queuing task: {transfer_type.name} {path}")
+                self._task_queue.put(task)
+            return  # Skip the finally block's unregister (already done above)
+
         except Exception as e:
             self._error_count += 1
             logger.exception(f"Task error: {path}")
@@ -412,11 +447,13 @@ class WorkerPool:
         finally:
             # Unregister from active and update counts
             with self._lock:
-                self._active_tasks.pop(path, None)
-                if transfer_type == TransferType.UPLOAD:
-                    self._active_uploads -= 1
-                elif transfer_type == TransferType.DOWNLOAD:
-                    self._active_downloads -= 1
+                # Only unregister if still registered (network errors handle this above)
+                if path in self._active_tasks:
+                    self._active_tasks.pop(path, None)
+                    if transfer_type == TransferType.UPLOAD:
+                        self._active_uploads -= 1
+                    elif transfer_type == TransferType.DOWNLOAD:
+                        self._active_downloads -= 1
 
     def _create_worker(self, transfer_type: TransferType) -> BaseWorker:
         """Create a worker for the given transfer type.
@@ -439,6 +476,7 @@ class WorkerPool:
                 client=self._client,
                 encryption_key=self._key,
                 base_path=self._base_path,
+                sync_state=self._state,
             )
         elif transfer_type == TransferType.DELETE:
             return DeleteWorker(

@@ -22,6 +22,19 @@ from enum import IntEnum, auto
 from pathlib import Path
 
 
+@dataclass
+class LocalFileInfo:
+    """Metadata about a local file for sync events.
+
+    Used to pass mtime/size information from scanner to queue,
+    enabling mtime-aware deduplication.
+    """
+
+    path: str
+    mtime: float
+    size: int
+
+
 class SyncError(Exception):
     """Base exception for sync errors."""
 

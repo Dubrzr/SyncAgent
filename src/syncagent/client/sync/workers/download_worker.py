@@ -10,17 +10,14 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from syncagent.client.sync.conflict import (
-    ConflictOutcome,
-    check_download_conflict,
-)
-from syncagent.client.sync.transfers import DownloadCancelledError, FileDownloader
 from syncagent.client.sync.types import DownloadResult
 from syncagent.client.sync.workers.base import (
     BaseWorker,
     CancelledException,
     WorkerContext,
 )
+from syncagent.client.sync.workers.transfers import DownloadCancelledError, FileDownloader
+from syncagent.client.sync.workers.transfers.conflict import ConflictOutcome, check_download_conflict
 
 if TYPE_CHECKING:
     from syncagent.client.api import HTTPClient
@@ -99,7 +96,7 @@ class DownloadWorker(BaseWorker):
                 logger.info(f"Download conflict resolved: local saved as {resolution.conflict_path}")
 
         # Get server file metadata
-        server_file = self._client.get_file(relative_path)
+        server_file = self._client.get_file_metadata(relative_path)
 
         # Create progress adapter
         def progress_adapter(current: int, total: int) -> None:
@@ -119,6 +116,22 @@ class DownloadWorker(BaseWorker):
                 local_path=local_path,
                 cancel_check=ctx.cancel_check,
             )
+
+            # Mark as synced after successful download
+            if self._sync_state is not None:
+                # Get chunk hashes from server
+                chunk_hashes = self._client.get_file_chunks(relative_path)
+                # Get local file stats for proper tracking
+                local_stat = local_path.stat()
+                self._sync_state.mark_synced(
+                    relative_path,
+                    server_file_id=server_file.id,
+                    server_version=server_file.version,
+                    chunk_hashes=chunk_hashes,
+                    local_mtime=local_stat.st_mtime,
+                    local_size=local_stat.st_size,
+                )
+
             return result
         except DownloadCancelledError as e:
             raise CancelledException(str(e)) from e

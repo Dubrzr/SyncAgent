@@ -36,7 +36,7 @@ class TestBasicSyncWorkflow:
 
         # Download the file
         download_path = client_b.sync_folder / "hello.txt"
-        server_file = client_b.api_client.get_file("hello.txt")
+        server_file = client_b.api_client.get_file_metadata("hello.txt")
         client_b.downloader.download_file(server_file, download_path)
 
         # Verify content matches
@@ -62,7 +62,7 @@ class TestBasicSyncWorkflow:
 
         download_path = client_b.sync_folder / "docs/reports/2024/report.txt"
         download_path.parent.mkdir(parents=True, exist_ok=True)
-        server_file = client_b.api_client.get_file("docs/reports/2024/report.txt")
+        server_file = client_b.api_client.get_file_metadata("docs/reports/2024/report.txt")
         client_b.downloader.download_file(server_file, download_path)
 
         assert download_path.read_text() == content
@@ -80,7 +80,7 @@ class TestBasicSyncWorkflow:
 
         # Client B downloads version 1
         download_path_b = client_b.sync_folder / "document.txt"
-        server_file = client_b.api_client.get_file("document.txt")
+        server_file = client_b.api_client.get_file_metadata("document.txt")
         client_b.downloader.download_file(server_file, download_path_b)
         assert download_path_b.read_text() == "Version 1"
 
@@ -92,7 +92,7 @@ class TestBasicSyncWorkflow:
         assert result2.server_version == 2
 
         # Client B re-downloads
-        server_file = client_b.api_client.get_file("document.txt")
+        server_file = client_b.api_client.get_file_metadata("document.txt")
         client_b.downloader.download_file(server_file, download_path_b)
         assert download_path_b.read_text() == "Version 2 - Updated!"
 
@@ -121,7 +121,7 @@ class TestBasicSyncWorkflow:
         for rel_path, expected_content in files_to_create.items():
             download_path = client_b.sync_folder / rel_path
             download_path.parent.mkdir(parents=True, exist_ok=True)
-            server_file = client_b.api_client.get_file(rel_path)
+            server_file = client_b.api_client.get_file_metadata(rel_path)
             client_b.downloader.download_file(server_file, download_path)
             assert download_path.read_text() == expected_content
 
@@ -186,7 +186,7 @@ class TestTrashAndRestore:
 
         # Client B should be able to download restored file
         download_path = client_b.sync_folder / "restore-me.txt"
-        server_file = client_b.api_client.get_file("restore-me.txt")
+        server_file = client_b.api_client.get_file_metadata("restore-me.txt")
         client_b.downloader.download_file(server_file, download_path)
         assert download_path.read_text() == content
 
@@ -238,7 +238,7 @@ class TestLargeFiles:
 
         # Client B downloads
         download_path = client_b.sync_folder / "large.bin"
-        server_file = client_b.api_client.get_file("large.bin")
+        server_file = client_b.api_client.get_file_metadata("large.bin")
         client_b.downloader.download_file(server_file, download_path)
 
         # Verify content matches exactly
@@ -264,7 +264,7 @@ class TestLargeFiles:
 
         # Client B downloads
         download_path = client_b.sync_folder / "huge.bin"
-        server_file = client_b.api_client.get_file("huge.bin")
+        server_file = client_b.api_client.get_file_metadata("huge.bin")
         client_b.downloader.download_file(server_file, download_path)
 
         # Verify content matches
@@ -287,7 +287,7 @@ class TestEdgeCases:
 
         # Client B downloads
         download_path = client_b.sync_folder / "empty.txt"
-        server_file = client_b.api_client.get_file("empty.txt")
+        server_file = client_b.api_client.get_file_metadata("empty.txt")
         client_b.downloader.download_file(server_file, download_path)
         assert download_path.read_text() == ""
 
@@ -305,7 +305,7 @@ class TestEdgeCases:
 
         # Client B downloads
         download_path = client_b.sync_folder / "binary.dat"
-        server_file = client_b.api_client.get_file("binary.dat")
+        server_file = client_b.api_client.get_file_metadata("binary.dat")
         client_b.downloader.download_file(server_file, download_path)
         assert download_path.read_bytes() == content
 
@@ -322,7 +322,7 @@ class TestEdgeCases:
 
         # Client B downloads
         download_path = client_b.sync_folder / "unicode.txt"
-        server_file = client_b.api_client.get_file("unicode.txt")
+        server_file = client_b.api_client.get_file_metadata("unicode.txt")
         client_b.downloader.download_file(server_file, download_path)
         # File content is binary (encrypted then decrypted), read as-is
         assert download_path.read_bytes() == content.encode("utf-8")
@@ -342,6 +342,6 @@ class TestEdgeCases:
         # Client B downloads
         download_path = client_b.sync_folder / "my documents/report 2024.txt"
         download_path.parent.mkdir(parents=True, exist_ok=True)
-        server_file = client_b.api_client.get_file("my documents/report 2024.txt")
+        server_file = client_b.api_client.get_file_metadata("my documents/report 2024.txt")
         client_b.downloader.download_file(server_file, download_path)
         assert download_path.read_text() == content

@@ -1,14 +1,3 @@
-"""Conflict detection and resolution utilities.
-
-This module provides:
-- get_machine_name: Get registered machine name from config
-- generate_conflict_filename: Generate conflict copy filename
-- safe_rename_for_conflict: Atomically rename file with race condition protection
-- resolve_upload_conflict: Full conflict resolution (compare hash, rename, download)
-- RaceConditionError: Raised when file is modified during conflict resolution
-- ConflictResolution: Result of conflict resolution
-"""
-
 from __future__ import annotations
 
 import logging
@@ -17,21 +6,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from syncagent.client.api import HTTPClient
-    from syncagent.client.state import LocalSyncState
+from syncagent.client.api import HTTPClient
+from syncagent.client.state import LocalSyncState
 
 logger = logging.getLogger(__name__)
-
-
-class ConflictOutcome(Enum):
-    """Outcome of conflict resolution."""
-
-    ALREADY_SYNCED = "already_synced"  # Hashes matched, no real conflict
-    RESOLVED = "resolved"  # Local renamed, server downloaded
-    RETRY_NEEDED = "retry_needed"  # Race condition, need to retry
 
 
 @dataclass
@@ -47,111 +26,6 @@ class ConflictResolution:
     outcome: ConflictOutcome
     conflict_path: Path | None = None
     server_version: int | None = None
-
-
-class RaceConditionError(Exception):
-    """Raised when a file is modified during conflict resolution."""
-
-    pass
-
-
-def get_machine_name() -> str:
-    """Get the machine name for conflict file naming.
-
-    Returns the registered machine name from config if available,
-    otherwise falls back to the hostname (sanitized).
-
-    Returns:
-        Machine name (already safe for filenames if from config).
-    """
-    # Import here to avoid circular imports
-    from syncagent.client.cli import get_registered_machine_name, sanitize_machine_name
-
-    # Try to get registered name from config
-    registered_name = get_registered_machine_name()
-    if registered_name:
-        return registered_name
-
-    # Fallback to hostname (sanitized) if not registered
-    return sanitize_machine_name(socket.gethostname())
-
-
-def generate_conflict_filename(original_path: Path, machine_name: str | None = None) -> Path:
-    """Generate a conflict filename with timestamp and machine name.
-
-    Format: filename.conflict-YYYYMMDD-HHMMSS-{machine}.ext
-
-    Args:
-        original_path: Original file path.
-        machine_name: Machine name (defaults to registered name from config).
-
-    Returns:
-        Path with conflict naming.
-    """
-    # Import here to avoid circular imports
-    from syncagent.client.cli import sanitize_machine_name
-
-    # get_machine_name() returns already sanitized names, but explicit names need sanitizing
-    machine_name = get_machine_name() if machine_name is None else sanitize_machine_name(machine_name)
-
-    now = datetime.now()
-    # Include milliseconds for uniqueness when multiple conflicts happen quickly
-    timestamp = now.strftime("%Y%m%d-%H%M%S") + f"{now.microsecond // 1000:03d}"
-    stem = original_path.stem
-    suffix = original_path.suffix
-
-    new_name = f"{stem}.conflict-{timestamp}-{machine_name}{suffix}"
-    return original_path.parent / new_name
-
-
-def safe_rename_for_conflict(local_path: Path, machine_name: str | None = None) -> Path:
-    """Rename a local file to .conflict-* with race condition protection.
-
-    This function captures the mtime before renaming, performs the rename,
-    then verifies the mtime hasn't changed. If the file was modified during
-    the rename operation, it rolls back and raises RaceConditionError.
-
-    Args:
-        local_path: Path to the local file to rename.
-        machine_name: Optional machine name override.
-
-    Returns:
-        Path to the renamed conflict file.
-
-    Raises:
-        RaceConditionError: If the file was modified during the rename.
-        FileNotFoundError: If the file doesn't exist.
-        OSError: If the rename fails.
-    """
-    # 1. Capture mtime before rename
-    mtime_before = local_path.stat().st_mtime
-
-    # 2. Generate conflict filename
-    conflict_path = generate_conflict_filename(local_path, machine_name)
-
-    # 3. Ensure conflict path doesn't already exist (very unlikely with ms timestamp)
-    if conflict_path.exists():
-        # Add extra uniqueness
-        import time
-        conflict_path = conflict_path.with_stem(
-            conflict_path.stem + f"-{int(time.time() * 1000) % 1000:03d}"
-        )
-
-    # 4. Rename the file
-    logger.debug(f"Renaming {local_path} to {conflict_path}")
-    local_path.rename(conflict_path)
-
-    # 5. Verify mtime hasn't changed (check on the renamed file)
-    mtime_after = conflict_path.stat().st_mtime
-
-    if mtime_after != mtime_before:
-        # File was modified during the rename - roll back!
-        logger.warning(f"Race condition detected: {local_path} was modified during rename")
-        conflict_path.rename(local_path)
-        raise RaceConditionError(f"File {local_path} was modified during conflict resolution")
-
-    logger.info(f"Created conflict file: {conflict_path}")
-    return conflict_path
 
 
 def resolve_upload_conflict(
@@ -187,7 +61,7 @@ def resolve_upload_conflict(
     from syncagent.core.crypto import compute_file_hash
 
     # 1. Get server file info
-    server_file = client.get_file(relative_path)
+    server_file = client.get_file_metadata(relative_path)
     server_hash = server_file.content_hash
     server_version = server_file.version
 
@@ -358,3 +232,116 @@ def check_download_conflict(
 
     # No modification - safe to overwrite
     return ConflictResolution(outcome=ConflictOutcome.ALREADY_SYNCED)
+
+
+def safe_rename_for_conflict(local_path: Path, machine_name: str | None = None) -> Path:
+    """Rename a local file to .conflict-* with race condition protection.
+
+    This function captures the mtime before renaming, performs the rename,
+    then verifies the mtime hasn't changed. If the file was modified during
+    the rename operation, it rolls back and raises RaceConditionError.
+
+    Args:
+        local_path: Path to the local file to rename.
+        machine_name: Optional machine name override.
+
+    Returns:
+        Path to the renamed conflict file.
+
+    Raises:
+        RaceConditionError: If the file was modified during the rename.
+        FileNotFoundError: If the file doesn't exist.
+        OSError: If the rename fails.
+    """
+    # 1. Capture mtime before rename
+    mtime_before = local_path.stat().st_mtime
+
+    # 2. Generate conflict filename
+    conflict_path = generate_conflict_filename(local_path, machine_name)
+
+    # 3. Ensure conflict path doesn't already exist (very unlikely with ms timestamp)
+    if conflict_path.exists():
+        # Add extra uniqueness
+        import time
+        conflict_path = conflict_path.with_stem(
+            conflict_path.stem + f"-{int(time.time() * 1000) % 1000:03d}"
+        )
+
+    # 4. Rename the file
+    logger.debug(f"Renaming {local_path} to {conflict_path}")
+    local_path.rename(conflict_path)
+
+    # 5. Verify mtime hasn't changed (check on the renamed file)
+    mtime_after = conflict_path.stat().st_mtime
+
+    if mtime_after != mtime_before:
+        # File was modified during the rename - roll back!
+        logger.warning(f"Race condition detected: {local_path} was modified during rename")
+        conflict_path.rename(local_path)
+        raise RaceConditionError(f"File {local_path} was modified during conflict resolution")
+
+    logger.info(f"Created conflict file: {conflict_path}")
+    return conflict_path
+
+
+def generate_conflict_filename(original_path: Path, machine_name: str | None = None) -> Path:
+    """Generate a conflict filename with timestamp and machine name.
+
+    Format: filename.conflict-YYYYMMDD-HHMMSS-{machine}.ext
+
+    Args:
+        original_path: Original file path.
+        machine_name: Machine name (defaults to registered name from config).
+
+    Returns:
+        Path with conflict naming.
+    """
+    # Import here to avoid circular imports
+    from syncagent.client.cli import sanitize_machine_name
+
+    # get_machine_name() returns already sanitized names, but explicit names need sanitizing
+    machine_name = get_machine_name() if machine_name is None else sanitize_machine_name(machine_name)
+
+    now = datetime.now()
+    # Include milliseconds for uniqueness when multiple conflicts happen quickly
+    timestamp = now.strftime("%Y%m%d-%H%M%S") + f"{now.microsecond // 1000:03d}"
+    stem = original_path.stem
+    suffix = original_path.suffix
+
+    new_name = f"{stem}.conflict-{timestamp}-{machine_name}{suffix}"
+    return original_path.parent / new_name
+
+
+def get_machine_name() -> str:
+    """Get the machine name for conflict file naming.
+
+    Returns the registered machine name from config if available,
+    otherwise falls back to the hostname (sanitized).
+
+    Returns:
+        Machine name (already safe for filenames if from config).
+    """
+    # Import here to avoid circular imports
+    from syncagent.client.cli import get_registered_machine_name, sanitize_machine_name
+
+    # Try to get registered name from config
+    registered_name = get_registered_machine_name()
+    if registered_name:
+        return registered_name
+
+    # Fallback to hostname (sanitized) if not registered
+    return sanitize_machine_name(socket.gethostname())
+
+
+class RaceConditionError(Exception):
+    """Raised when a file is modified during conflict resolution."""
+
+    pass
+
+
+class ConflictOutcome(Enum):
+    """Outcome of conflict resolution."""
+
+    ALREADY_SYNCED = "already_synced"  # Hashes matched, no real conflict
+    RESOLVED = "resolved"  # Local renamed, server downloaded
+    RETRY_NEEDED = "retry_needed"  # Race condition, need to retry

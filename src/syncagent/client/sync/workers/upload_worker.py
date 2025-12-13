@@ -11,17 +11,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from syncagent.client.api import ConflictError
-from syncagent.client.sync.conflict import (
-    ConflictOutcome,
-    resolve_upload_conflict,
-)
-from syncagent.client.sync.transfers import FileUploader, UploadCancelledError
 from syncagent.client.sync.types import EarlyConflictError, UploadResult
 from syncagent.client.sync.workers.base import (
     BaseWorker,
     CancelledException,
     WorkerContext,
 )
+from syncagent.client.sync.workers.transfers import FileUploader, UploadCancelledError
+from syncagent.client.sync.workers.transfers.conflict import ConflictOutcome, resolve_upload_conflict
 
 if TYPE_CHECKING:
     from syncagent.client.api import HTTPClient
@@ -147,7 +144,7 @@ class UploadWorker(BaseWorker):
 
         # Both ALREADY_SYNCED and RESOLVED are considered success
         # Get the current server file info to build the result
-        server_file = self._client.get_file(relative_path)
+        server_file = self._client.get_file_metadata(relative_path)
 
         return UploadResult(
             path=relative_path,

@@ -25,16 +25,6 @@ from syncagent.client.sync.change_scanner import (
     RemoteChanges,
     emit_events,
 )
-from syncagent.client.sync.conflict import (
-    ConflictOutcome,
-    ConflictResolution,
-    RaceConditionError,
-    check_download_conflict,
-    generate_conflict_filename,
-    get_machine_name,
-    resolve_upload_conflict,
-    safe_rename_for_conflict,
-)
 from syncagent.client.sync.coordinator import SyncCoordinator
 from syncagent.client.sync.ignore import IgnorePatterns
 from syncagent.client.sync.queue import EventQueue
@@ -48,12 +38,6 @@ from syncagent.client.sync.retry import (
     retry_with_backoff,
     retry_with_network_wait,
     wait_for_network,
-)
-from syncagent.client.sync.transfers import (
-    DownloadCancelledError,
-    FileDownloader,
-    FileUploader,
-    UploadCancelledError,
 )
 from syncagent.client.sync.types import (
     ConflictCallback,
@@ -93,6 +77,22 @@ from syncagent.client.sync.workers import (
     WorkerResult,
     WorkerState,
     WorkerTask,
+)
+from syncagent.client.sync.workers.transfers import (
+    DownloadCancelledError,
+    FileDownloader,
+    FileUploader,
+    UploadCancelledError,
+)
+from syncagent.client.sync.workers.transfers.conflict import (
+    ConflictOutcome,
+    ConflictResolution,
+    RaceConditionError,
+    check_download_conflict,
+    generate_conflict_filename,
+    get_machine_name,
+    resolve_upload_conflict,
+    safe_rename_for_conflict,
 )
 
 __all__ = [

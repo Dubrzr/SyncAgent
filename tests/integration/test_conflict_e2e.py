@@ -68,7 +68,7 @@ class TestConflictDetection:
         assert result3.server_version == 3
 
         # Both clients can read the final version
-        server_file = client_a.api_client.get_file("doc.txt")
+        server_file = client_a.api_client.get_file_metadata("doc.txt")
         download_path = client_a.sync_folder / "final.txt"
         client_a.downloader.download_file(server_file, download_path)
         assert download_path.read_text() == "Version 3 by A"
@@ -152,7 +152,7 @@ class TestConflictRecovery:
             )
 
         # Client B fetches current version and retries
-        server_file = client_b.api_client.get_file("retry.txt")
+        server_file = client_b.api_client.get_file_metadata("retry.txt")
         current_version = server_file.version
         assert current_version == 2
 
@@ -180,7 +180,7 @@ class TestConflictRecovery:
         )
 
         # Client B syncs first (downloads latest version)
-        server_file = client_b.api_client.get_file("sync-first.txt")
+        server_file = client_b.api_client.get_file_metadata("sync-first.txt")
         download_path = client_b.sync_folder / "sync-first.txt"
         client_b.downloader.download_file(server_file, download_path)
 
@@ -240,18 +240,18 @@ class TestConcurrentOperations:
         client_b.uploader.upload_file(local_b2, "file2.txt", parent_version=1)
 
         # Both files should have version 2
-        file1 = client_a.api_client.get_file("file1.txt")
-        file2 = client_b.api_client.get_file("file2.txt")
+        file1 = client_a.api_client.get_file_metadata("file1.txt")
+        file2 = client_b.api_client.get_file_metadata("file2.txt")
         assert file1.version == 2
         assert file2.version == 2
 
         # Cross-download works
-        server_file1 = client_b.api_client.get_file("file1.txt")
+        server_file1 = client_b.api_client.get_file_metadata("file1.txt")
         download1 = client_b.sync_folder / "file1_from_a.txt"
         client_b.downloader.download_file(server_file1, download1)
         assert download1.read_text() == "A1 v2"
 
-        server_file2 = client_a.api_client.get_file("file2.txt")
+        server_file2 = client_a.api_client.get_file_metadata("file2.txt")
         download2 = client_a.sync_folder / "file2_from_b.txt"
         client_a.downloader.download_file(server_file2, download2)
         assert download2.read_text() == "B2 v2"

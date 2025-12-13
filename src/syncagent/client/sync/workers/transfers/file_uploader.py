@@ -204,7 +204,7 @@ class FileUploader:
                     f"File {relative_path} already exists on server, "
                     "falling back to update"
                 )
-                existing = self._client.get_file(relative_path)
+                existing = self._client.get_file_metadata(relative_path)
                 server_file = self._client.update_file(
                     path=relative_path,
                     size=size,
@@ -222,9 +222,15 @@ class FileUploader:
                 chunks=chunk_hashes,
             )
 
-        # Clear upload progress on success
+        # Clear upload progress and mark as synced
         if self._state:
             self._state.clear_upload_progress(relative_path)
+            self._state.mark_synced(
+                relative_path,
+                server_file_id=server_file.id,
+                server_version=server_file.version,
+                chunk_hashes=chunk_hashes,
+            )
 
         logger.info(
             f"Uploaded {relative_path}: {len(chunks)} chunks, "
@@ -298,7 +304,7 @@ class FileUploader:
         from syncagent.client.api import NotFoundError
 
         try:
-            server_file = self._client.get_file(relative_path)
+            server_file = self._client.get_file_metadata(relative_path)
             actual_version = server_file.version
 
             if actual_version != expected_version:

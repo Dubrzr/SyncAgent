@@ -241,18 +241,22 @@ def sync(watch: bool, no_progress: bool) -> None:
     pool.start()
     status_reporter.update_status(StatusUpdate(state=SyncStateEnum.SYNCING))
 
+    # Start watcher BEFORE scan to capture modifications during scan
+    # The queue uses mtime-aware deduplication, so watcher events with
+    # more recent mtime will win over scan events with stale mtime
+    watcher = FileWatcher(sync_folder, queue)
+    watcher.start()
+
     # Initial scan (always happens, whether watch or single mode)
+    # Events from scanner and watcher arrive in parallel; queue deduplicates by mtime
     fetch_and_emit_changes()
     process_queue_until_idle()
     display_summary()
 
     if watch:
-        # Watch mode: keep pool running, process watcher events
+        # Watch mode: keep watcher running, process events continuously
         click.echo("\nWatching for changes... (Ctrl+C to stop)\n")
         status_reporter.update_status(StatusUpdate(state=SyncStateEnum.IDLE))
-
-        watcher = FileWatcher(sync_folder, queue)
-        watcher.start()
 
         try:
             while True:
@@ -289,9 +293,13 @@ def sync(watch: bool, no_progress: bool) -> None:
 
         except KeyboardInterrupt:
             click.echo("\nStopping...")
-            watcher.stop()
+    else:
+        # Single sync mode: stop watcher after initial scan
+        watcher.stop()
 
     # Cleanup (both modes)
+    if watch:
+        watcher.stop()
     pool.stop()
 
     if watch:

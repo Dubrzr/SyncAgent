@@ -44,6 +44,7 @@ from typing import TYPE_CHECKING
 from syncagent.client.state import FileStatus
 from syncagent.client.sync.ignore import IgnorePatterns
 from syncagent.client.sync.types import (
+    LocalFileInfo,
     SyncEvent,
     SyncEventSource,
     SyncEventType,
@@ -64,10 +65,14 @@ EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
 
 @dataclass
 class LocalChanges:
-    """Result of local filesystem scan."""
+    """Result of local filesystem scan.
 
-    created: list[str]
-    modified: list[str]
+    created/modified contain LocalFileInfo with mtime/size for deduplication.
+    deleted contains just paths (no mtime needed for deletions).
+    """
+
+    created: list[LocalFileInfo]
+    modified: list[LocalFileInfo]
     deleted: list[str]
 
 
@@ -92,15 +97,15 @@ def emit_events(
 
     Args:
         queue: Event queue to push events to.
-        local_changes: Changes detected locally.
+        local_changes: Changes detected locally (with mtime/size metadata).
         remote_changes: Changes detected remotely.
 
     Returns:
         SyncResult summarizing what was queued.
     """
-    # Build sets for conflict detection
-    local_created_set = set(local_changes.created)
-    local_modified_set = set(local_changes.modified)
+    # Build sets for conflict detection (extract paths from LocalFileInfo)
+    local_created_set = {f.path for f in local_changes.created}
+    local_modified_set = {f.path for f in local_changes.modified}
     local_deleted_set = set(local_changes.deleted)
     remote_created_set = set(remote_changes.created)
     remote_modified_set = set(remote_changes.modified)
@@ -135,26 +140,28 @@ def emit_events(
     downloaded: list[str] = []
     deleted: list[str] = []
 
-    # Push local events
-    for path in local_changes.created:
+    # Push local events (with mtime/size metadata for deduplication)
+    for file_info in local_changes.created:
         event = SyncEvent.create(
             event_type=SyncEventType.LOCAL_CREATED,
-            path=path,
+            path=file_info.path,
             source=SyncEventSource.LOCAL,
+            metadata={"mtime": file_info.mtime, "size": file_info.size},
         )
         queue.put(event)
-        uploaded.append(path)
-        logger.debug(f"Queued LOCAL_CREATED: {path}")
+        uploaded.append(file_info.path)
+        logger.debug(f"Queued LOCAL_CREATED: {file_info.path}")
 
-    for path in local_changes.modified:
+    for file_info in local_changes.modified:
         event = SyncEvent.create(
             event_type=SyncEventType.LOCAL_MODIFIED,
-            path=path,
+            path=file_info.path,
             source=SyncEventSource.LOCAL,
+            metadata={"mtime": file_info.mtime, "size": file_info.size},
         )
         queue.put(event)
-        uploaded.append(path)
-        logger.debug(f"Queued LOCAL_MODIFIED: {path}")
+        uploaded.append(file_info.path)
+        logger.debug(f"Queued LOCAL_MODIFIED: {file_info.path}")
 
     for path in local_changes.deleted:
         # Skip if remote modification wins
@@ -359,10 +366,11 @@ class ChangeScanner:
         network issues.
 
         Returns:
-            LocalChanges with lists of created, modified, deleted paths.
+            LocalChanges with LocalFileInfo (including mtime/size) for created/modified,
+            and paths for deleted.
         """
-        created: list[str] = []
-        modified: list[str] = []
+        created: list[LocalFileInfo] = []
+        modified: list[LocalFileInfo] = []
         deleted: list[str] = []
 
         # Use ignore patterns
@@ -408,7 +416,11 @@ class ChangeScanner:
                         local_hash="",  # Will be computed on upload
                         status=FileStatus.NEW,
                     )
-                    created.append(relative_path)
+                    created.append(LocalFileInfo(
+                        path=relative_path,
+                        mtime=stat.st_mtime,
+                        size=stat.st_size,
+                    ))
 
                 elif local_file.status == FileStatus.SYNCED:
                     # Check if modified since last sync
@@ -419,14 +431,23 @@ class ChangeScanner:
                     ):
                         logger.debug(f"Found modified local file: {relative_path}")
                         self._state.mark_modified(relative_path)
-                        modified.append(relative_path)
+                        modified.append(LocalFileInfo(
+                            path=relative_path,
+                            mtime=stat.st_mtime,
+                            size=stat.st_size,
+                        ))
 
                 elif local_file.status in (FileStatus.NEW, FileStatus.MODIFIED):
-                    # Already pending, add to list
+                    # Already pending, add to list with current stats
+                    file_info = LocalFileInfo(
+                        path=relative_path,
+                        mtime=stat.st_mtime,
+                        size=stat.st_size,
+                    )
                     if local_file.status == FileStatus.NEW:
-                        created.append(relative_path)
+                        created.append(file_info)
                     else:
-                        modified.append(relative_path)
+                        modified.append(file_info)
 
         # Check for deleted files (in state DB but not on disk)
         synced_files = self._state.list_files(status=FileStatus.SYNCED)

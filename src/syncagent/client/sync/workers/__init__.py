@@ -23,10 +23,10 @@ from syncagent.client.sync.workers.base import (
     WorkerResult,
     WorkerState,
 )
-from syncagent.client.sync.workers.delete import DeleteResult, DeleteWorker
-from syncagent.client.sync.workers.download import DownloadWorker
+from syncagent.client.sync.workers.delete_worker import DeleteResult, DeleteWorker
+from syncagent.client.sync.workers.download_worker import DownloadWorker
 from syncagent.client.sync.workers.pool import PoolState, WorkerPool, WorkerTask
-from syncagent.client.sync.workers.upload import UploadWorker
+from syncagent.client.sync.workers.upload_worker import UploadWorker
 
 __all__ = [
     # Base

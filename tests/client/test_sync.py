@@ -88,10 +88,10 @@ class TestFileUploader:
         test_file.write_text("Updated content")
 
         mock_client.chunk_exists.return_value = False
-        # Mock get_file to return matching version for pre-upload check
+        # Mock get_file_metadata to return matching version for pre-upload check
         server_file = MagicMock()
         server_file.version = 2  # Matches parent_version
-        mock_client.get_file.return_value = server_file
+        mock_client.get_file_metadata.return_value = server_file
 
         updated_file = MagicMock()
         updated_file.id = 1
@@ -151,10 +151,10 @@ class TestFileUploader:
         test_file.write_text("Content")
 
         mock_client.chunk_exists.return_value = False
-        # Mock get_file to return matching version for pre-upload check
+        # Mock get_file_metadata to return matching version for pre-upload check
         server_file = MagicMock()
         server_file.version = 1  # Matches parent_version
-        mock_client.get_file.return_value = server_file
+        mock_client.get_file_metadata.return_value = server_file
 
         # But update_file fails with conflict (version changed between check and commit)
         mock_client.update_file.side_effect = ConflictError("Version conflict")

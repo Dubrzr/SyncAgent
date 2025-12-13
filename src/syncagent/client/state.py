@@ -344,23 +344,65 @@ class LocalSyncState:
         server_file_id: int,
         server_version: int,
         chunk_hashes: list[str],
+        local_mtime: float | None = None,
+        local_size: int | None = None,
     ) -> None:
-        """Mark a file as successfully synced.
+        """Mark a file as successfully synced (upsert).
+
+        Creates the file record if it doesn't exist, or updates if it does.
+        This handles both upload (file exists as NEW/MODIFIED) and download
+        (file may not exist yet for REMOTE_CREATED).
 
         Args:
             path: Relative path.
             server_file_id: ID on server.
             server_version: Version on server.
             chunk_hashes: List of chunk hashes.
+            local_mtime: Optional local file mtime (for downloads).
+            local_size: Optional local file size (for downloads).
         """
-        self.update_file(
-            path,
-            server_file_id=server_file_id,
-            server_version=server_version,
-            chunk_hashes=chunk_hashes,
-            status=FileStatus.SYNCED,
-            last_synced_at=time.time(),
-        )
+        now = time.time()
+        with self._lock:
+            # Check if file exists
+            existing = self.get_file(path)
+            if existing is None:
+                # Insert new record (download case)
+                self._conn.execute(
+                    """
+                    INSERT INTO local_files (
+                        path, server_file_id, server_version, chunk_hashes,
+                        status, last_synced_at, local_mtime, local_size, local_hash
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    """,
+                    (path, server_file_id, server_version, json.dumps(chunk_hashes),
+                     FileStatus.SYNCED.value, now, local_mtime, local_size),
+                )
+            else:
+                # Update existing record
+                if local_mtime is not None and local_size is not None:
+                    # Download case: also update local file info
+                    self._conn.execute(
+                        """
+                        UPDATE local_files
+                        SET server_file_id = ?, server_version = ?, chunk_hashes = ?,
+                            status = ?, last_synced_at = ?, local_mtime = ?, local_size = ?
+                        WHERE path = ?
+                        """,
+                        (server_file_id, server_version, json.dumps(chunk_hashes),
+                         FileStatus.SYNCED.value, now, local_mtime, local_size, path),
+                    )
+                else:
+                    # Upload case: keep existing local file info
+                    self._conn.execute(
+                        """
+                        UPDATE local_files
+                        SET server_file_id = ?, server_version = ?, chunk_hashes = ?,
+                            status = ?, last_synced_at = ?
+                        WHERE path = ?
+                        """,
+                        (server_file_id, server_version, json.dumps(chunk_hashes),
+                         FileStatus.SYNCED.value, now, path),
+                    )
 
     def mark_modified(self, path: str) -> None:
         """Mark a file as locally modified."""

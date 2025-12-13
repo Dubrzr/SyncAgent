@@ -175,6 +175,141 @@ class TestEventQueue:
         retrieved = queue.get(timeout=1)
         assert retrieved == event3
 
+    def test_mtime_deduplication_newer_wins(self) -> None:
+        """Event with newer mtime should replace event with older mtime."""
+        queue = EventQueue()
+
+        # First event with mtime=100
+        event1 = SyncEvent.create(
+            SyncEventType.LOCAL_MODIFIED,
+            "file.txt",
+            SyncEventSource.LOCAL,
+            metadata={"mtime": 100.0, "size": 1000},
+        )
+        queue.put(event1)
+        assert len(queue) == 1
+
+        # Second event with mtime=200 (newer) - should replace
+        event2 = SyncEvent.create(
+            SyncEventType.LOCAL_MODIFIED,
+            "file.txt",
+            SyncEventSource.LOCAL,
+            metadata={"mtime": 200.0, "size": 2000},
+        )
+        queue.put(event2)
+        assert len(queue) == 1
+
+        retrieved = queue.get(timeout=1)
+        assert retrieved.metadata.get("mtime") == 200.0
+        assert retrieved.metadata.get("size") == 2000
+
+    def test_mtime_deduplication_older_ignored(self) -> None:
+        """Event with older mtime should be ignored when newer exists."""
+        queue = EventQueue()
+
+        # First event with mtime=200 (newer)
+        event_newer = SyncEvent.create(
+            SyncEventType.LOCAL_MODIFIED,
+            "file.txt",
+            SyncEventSource.LOCAL,
+            metadata={"mtime": 200.0, "size": 2000},
+        )
+        queue.put(event_newer)
+        assert len(queue) == 1
+
+        # Second event with mtime=100 (older) - should be ignored
+        event_older = SyncEvent.create(
+            SyncEventType.LOCAL_CREATED,
+            "file.txt",
+            SyncEventSource.LOCAL,
+            metadata={"mtime": 100.0, "size": 1000},
+        )
+        result = queue.put(event_older)
+        assert result is True  # Accepted but not stored
+        assert len(queue) == 1
+
+        # Should still have the newer event
+        retrieved = queue.get(timeout=1)
+        assert retrieved.metadata.get("mtime") == 200.0
+
+    def test_mtime_deduplication_same_mtime_uses_timestamp(self) -> None:
+        """When mtime is equal, event timestamp should be used."""
+        queue = EventQueue()
+
+        # First event with mtime=100, timestamp will be auto-generated
+        event1 = SyncEvent.create(
+            SyncEventType.LOCAL_MODIFIED,
+            "file.txt",
+            SyncEventSource.LOCAL,
+            metadata={"mtime": 100.0, "size": 1000},
+        )
+        queue.put(event1)
+
+        # Wait a bit so timestamp differs
+        time.sleep(0.01)
+
+        # Second event with same mtime=100, but later timestamp
+        event2 = SyncEvent.create(
+            SyncEventType.LOCAL_MODIFIED,
+            "file.txt",
+            SyncEventSource.LOCAL,
+            metadata={"mtime": 100.0, "size": 1000},
+        )
+        queue.put(event2)
+
+        retrieved = queue.get(timeout=1)
+        # Should have the event with later timestamp
+        assert retrieved.timestamp == event2.timestamp
+
+    def test_mtime_deduplication_no_mtime_fallback(self) -> None:
+        """Events without mtime should use standard deduplication (latest wins)."""
+        queue = EventQueue()
+
+        # First event without mtime
+        event1 = SyncEvent.create(
+            SyncEventType.REMOTE_MODIFIED,
+            "file.txt",
+            SyncEventSource.REMOTE,
+        )
+        queue.put(event1)
+
+        time.sleep(0.01)
+
+        # Second event without mtime - should replace
+        event2 = SyncEvent.create(
+            SyncEventType.REMOTE_CREATED,
+            "file.txt",
+            SyncEventSource.REMOTE,
+        )
+        queue.put(event2)
+
+        retrieved = queue.get(timeout=1)
+        assert retrieved.event_type == SyncEventType.REMOTE_CREATED
+
+    def test_mtime_deduplication_mixed_local_remote(self) -> None:
+        """Local event with mtime, remote without - should replace based on arrival."""
+        queue = EventQueue()
+
+        # Local event with mtime
+        event_local = SyncEvent.create(
+            SyncEventType.LOCAL_MODIFIED,
+            "file.txt",
+            SyncEventSource.LOCAL,
+            metadata={"mtime": 100.0, "size": 1000},
+        )
+        queue.put(event_local)
+
+        # Remote event without mtime - should replace (no mtime comparison possible)
+        event_remote = SyncEvent.create(
+            SyncEventType.REMOTE_MODIFIED,
+            "file.txt",
+            SyncEventSource.REMOTE,
+        )
+        queue.put(event_remote)
+
+        retrieved = queue.get(timeout=1)
+        assert retrieved.source == SyncEventSource.REMOTE
+
     def test_get_nowait(self) -> None:
         """get_nowait should return None if queue is empty."""
         queue = EventQueue()

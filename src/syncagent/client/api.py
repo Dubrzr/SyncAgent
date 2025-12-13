@@ -219,7 +219,7 @@ class HTTPClient:
         )
         return [ServerFile.from_dict(f) for f in response.json()]
 
-    def get_file(self, path: str) -> ServerFile:
+    def get_file_metadata(self, path: str) -> ServerFile:
         """Get file metadata by path.
 
         Args:

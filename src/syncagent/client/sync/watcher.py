@@ -146,14 +146,27 @@ class DebouncedEventHandler(FileSystemEventHandler):
         # Use forward slashes for consistency
         path_str = str(rel_path).replace("\\", "/")
 
+        # Build metadata with mtime/size for deduplication
+        # For DELETED events, the file doesn't exist so we can't get stats
+        metadata: dict[str, str | int | float] = {
+            "absolute_path": str(change.path),
+            "timestamp": change.timestamp,
+        }
+
+        if change.change_type != ChangeType.DELETED and change.path.exists():
+            try:
+                stat = change.path.stat()
+                metadata["mtime"] = stat.st_mtime
+                metadata["size"] = stat.st_size
+            except OSError:
+                # File may have been deleted between detection and stat
+                pass
+
         event = SyncEvent.create(
             event_type=event_type,
             path=path_str,
             source=SyncEventSource.LOCAL,
-            metadata={
-                "absolute_path": str(change.path),
-                "timestamp": change.timestamp,
-            },
+            metadata=metadata,
         )
         self._event_queue.put(event)
         logger.debug("Watcher injected event: %s", event)

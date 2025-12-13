@@ -619,7 +619,7 @@ class TestUploadWorkerEarlyConflict:
         mock_server_file = MagicMock()
         mock_server_file.version = 2
         mock_server_file.id = 1
-        mock_client.get_file.return_value = mock_server_file
+        mock_client.get_file_metadata.return_value = mock_server_file
         mock_client.chunk_exists.return_value = False
         mock_client.update_file.return_value = MagicMock(id=1, version=3)
 
