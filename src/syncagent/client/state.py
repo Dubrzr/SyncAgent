@@ -124,9 +124,6 @@ class LocalSyncState:
     File status is derived on-the-fly by comparing with disk state.
     """
 
-    # Schema version for migrations
-    SCHEMA_VERSION = 2
-
     def __init__(self, db_path: Path) -> None:
         """Initialize local state database.
 
@@ -151,7 +148,6 @@ class LocalSyncState:
         self._conn.execute("PRAGMA foreign_keys=ON")
 
         self._create_tables()
-        self._migrate_if_needed()
 
     def _create_tables(self) -> None:
         """Create database tables if they don't exist."""
@@ -171,74 +167,7 @@ class LocalSyncState:
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
-
-            -- Schema version tracking
-            CREATE TABLE IF NOT EXISTS schema_version (
-                version INTEGER PRIMARY KEY
-            );
         """)
-
-    def _migrate_if_needed(self) -> None:
-        """Run migrations if schema version is old."""
-        with self._lock:
-            cursor = self._conn.execute(
-                "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
-            )
-            row = cursor.fetchone()
-            current_version = row["version"] if row else 0
-
-            if current_version < self.SCHEMA_VERSION:
-                self._run_migrations(current_version)
-                self._conn.execute(
-                    "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
-                    (self.SCHEMA_VERSION,),
-                )
-
-    def _run_migrations(self, from_version: int) -> None:
-        """Run migrations from given version to current."""
-        if from_version < 2:
-            # Migrate from old schema (local_files) to new (synced_files)
-            self._migrate_v1_to_v2()
-
-    def _migrate_v1_to_v2(self) -> None:
-        """Migrate from v1 (local_files with status) to v2 (synced_files)."""
-        # Check if old table exists
-        cursor = self._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='local_files'"
-        )
-        if cursor.fetchone() is None:
-            logger.debug("No local_files table to migrate")
-            return
-
-        logger.info("Migrating state database from v1 to v2...")
-
-        # Copy synced files to new table
-        self._conn.executescript("""
-            -- Copy only SYNCED files (status='synced')
-            INSERT OR IGNORE INTO synced_files (
-                path, local_mtime, local_size, server_version, chunk_hashes, synced_at
-            )
-            SELECT
-                path,
-                COALESCE(local_mtime, 0),
-                COALESCE(local_size, 0),
-                COALESCE(server_version, 0),
-                chunk_hashes,
-                COALESCE(last_synced_at, 0)
-            FROM local_files
-            WHERE status = 'synced' AND server_version IS NOT NULL;
-
-            -- Drop old tables
-            DROP TABLE IF EXISTS local_files;
-            DROP TABLE IF EXISTS pending_uploads;
-            DROP TABLE IF EXISTS upload_progress;
-
-            -- Drop old indexes
-            DROP INDEX IF EXISTS idx_local_files_status;
-            DROP INDEX IF EXISTS idx_upload_progress_path;
-        """)
-
-        logger.info("Migration complete: old tables dropped, synced files preserved")
 
     def close(self) -> None:
         """Close the database connection."""
