@@ -332,13 +332,15 @@ class TestChangeScanner:
         test_file = base_path / "existing.txt"
         test_file.write_text("Original content")
 
-        sync_state.add_file(
+        # Track as synced with old mtime (file was synced, then modified)
+        sync_state.mark_synced(
             "existing.txt",
+            server_file_id=1,
+            server_version=1,
+            chunk_hashes=[],
             local_mtime=test_file.stat().st_mtime - 10,  # Old mtime
             local_size=len("Original content"),
-            status=FileStatus.SYNCED,
         )
-        sync_state.update_file("existing.txt", server_file_id=1, server_version=1)
 
         # Modify the file
         time.sleep(0.01)
@@ -371,9 +373,15 @@ class TestChangeScanner:
         base_path = tmp_path / "sync"
         base_path.mkdir()
 
-        # Track file as synced (but don't create it on disk)
-        sync_state.add_file("deleted.txt", status=FileStatus.SYNCED)
-        sync_state.update_file("deleted.txt", server_file_id=1, server_version=1)
+        # Track file as synced (but don't create it on disk - simulates deletion)
+        sync_state.mark_synced(
+            "deleted.txt",
+            server_file_id=1,
+            server_version=1,
+            chunk_hashes=[],
+            local_mtime=100.0,
+            local_size=50,
+        )
 
         mock_client.list_files.return_value = []
 
@@ -435,9 +443,15 @@ class TestChangeScanner:
         base_path = tmp_path / "sync"
         base_path.mkdir()
 
-        # Track file as synced with old version
-        sync_state.add_file("remote.txt", status=FileStatus.SYNCED)
-        sync_state.update_file("remote.txt", server_file_id=1, server_version=1)
+        # Track file as synced with old version (server has newer)
+        sync_state.mark_synced(
+            "remote.txt",
+            server_file_id=1,
+            server_version=1,
+            chunk_hashes=[],
+            local_mtime=100.0,
+            local_size=50,
+        )
 
         # Server has newer version
         server_file = MagicMock(spec=ServerFile)
@@ -476,14 +490,15 @@ class TestChangeScanner:
         test_file = base_path / "synced.txt"
         test_file.write_text("Content")
 
-        # Track as synced with same version
-        sync_state.add_file(
+        # Track as synced with same version and matching mtime/size
+        sync_state.mark_synced(
             "synced.txt",
+            server_file_id=1,
+            server_version=5,
+            chunk_hashes=[],
             local_mtime=test_file.stat().st_mtime,
             local_size=len("Content"),
-            status=FileStatus.SYNCED,
         )
-        sync_state.update_file("synced.txt", server_file_id=1, server_version=5)
 
         # Server has same version
         server_file = MagicMock(spec=ServerFile)
@@ -522,9 +537,15 @@ class TestChangeScanner:
         test_file = base_path / "changed.txt"
         test_file.write_text("Local changes")
 
-        # Track as modified locally
-        sync_state.add_file("changed.txt", status=FileStatus.MODIFIED)
-        sync_state.update_file("changed.txt", server_file_id=1, server_version=2)
+        # Track as synced with OLD mtime (simulates local modification after sync)
+        sync_state.mark_synced(
+            "changed.txt",
+            server_file_id=1,
+            server_version=2,
+            chunk_hashes=[],
+            local_mtime=test_file.stat().st_mtime - 100,  # Old mtime = modified
+            local_size=len("Old content"),  # Old size
+        )
 
         # Server has newer version
         server_file = MagicMock(spec=ServerFile)

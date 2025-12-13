@@ -1,10 +1,17 @@
-"""Tests for local sync state management."""
+"""Tests for local sync state management.
 
+The new simplified state:
+- Only tracks synced files (no status column)
+- Status is derived from disk state at runtime
+- No pending_uploads or upload_progress tables
+"""
+
+import time
 from pathlib import Path
 
 import pytest
 
-from syncagent.client.state import FileStatus, LocalSyncState
+from syncagent.client.state import FileStatus, LocalSyncState, SyncedFile, derive_status
 
 
 class TestSyncStateCreation:
@@ -27,11 +34,12 @@ class TestSyncStateCreation:
         state.close()
 
     def test_reopens_existing_db(self, tmp_path: Path) -> None:
-        """Should reopen existing database."""
+        """Should reopen existing database with data preserved."""
         db_path = tmp_path / "state.db"
 
         state1 = LocalSyncState(db_path)
-        state1.add_file("test.txt")
+        state1.mark_synced("test.txt", server_file_id=1, server_version=1,
+                          chunk_hashes=[], local_mtime=100.0, local_size=50)
         state1.close()
 
         state2 = LocalSyncState(db_path)
@@ -41,8 +49,8 @@ class TestSyncStateCreation:
         state2.close()
 
 
-class TestFileOperations:
-    """Tests for file tracking operations."""
+class TestSyncedFileOperations:
+    """Tests for synced file operations."""
 
     @pytest.fixture
     def state(self, tmp_path: Path) -> LocalSyncState:
@@ -51,29 +59,39 @@ class TestFileOperations:
         yield s
         s.close()
 
-    def test_add_file(self, state: LocalSyncState) -> None:
-        """Should add a file to tracking."""
-        file = state.add_file(
+    def test_mark_synced_creates_record(self, state: LocalSyncState) -> None:
+        """mark_synced should create a new synced file record."""
+        state.mark_synced(
             "docs/readme.txt",
+            server_file_id=10,
+            server_version=5,
+            chunk_hashes=["hash1", "hash2"],
             local_mtime=12345.0,
             local_size=100,
-            local_hash="abc123",
         )
 
+        file = state.get_file("docs/readme.txt")
+        assert file is not None
         assert file.path == "docs/readme.txt"
         assert file.local_mtime == 12345.0
         assert file.local_size == 100
-        assert file.local_hash == "abc123"
-        assert file.status == FileStatus.NEW
+        assert file.server_version == 5
+        assert file.chunk_hashes == ["hash1", "hash2"]
+        assert file.synced_at > 0
 
-    def test_get_file(self, state: LocalSyncState) -> None:
-        """Should retrieve a tracked file."""
-        state.add_file("test.txt", local_size=50)
+    def test_mark_synced_updates_existing(self, state: LocalSyncState) -> None:
+        """mark_synced should update existing record."""
+        state.mark_synced("test.txt", server_file_id=1, server_version=1,
+                          chunk_hashes=["a"], local_mtime=100.0, local_size=50)
+        state.mark_synced("test.txt", server_file_id=1, server_version=2,
+                          chunk_hashes=["b", "c"], local_mtime=200.0, local_size=100)
 
         file = state.get_file("test.txt")
         assert file is not None
-        assert file.path == "test.txt"
-        assert file.local_size == 50
+        assert file.server_version == 2
+        assert file.chunk_hashes == ["b", "c"]
+        assert file.local_mtime == 200.0
+        assert file.local_size == 100
 
     def test_get_nonexistent_file(self, state: LocalSyncState) -> None:
         """Should return None for nonexistent file."""
@@ -82,24 +100,20 @@ class TestFileOperations:
 
     def test_update_file(self, state: LocalSyncState) -> None:
         """Should update file metadata."""
-        state.add_file("test.txt")
+        state.mark_synced("test.txt", server_file_id=1, server_version=1,
+                          chunk_hashes=[], local_mtime=100.0, local_size=50)
 
-        state.update_file(
-            "test.txt",
-            server_file_id=42,
-            server_version=3,
-            status=FileStatus.SYNCED,
-        )
+        state.update_file("test.txt", server_version=3, local_mtime=200.0)
 
         file = state.get_file("test.txt")
         assert file is not None
-        assert file.server_file_id == 42
         assert file.server_version == 3
-        assert file.status == FileStatus.SYNCED
+        assert file.local_mtime == 200.0
 
     def test_update_chunk_hashes(self, state: LocalSyncState) -> None:
         """Should update chunk hashes as JSON."""
-        state.add_file("test.txt")
+        state.mark_synced("test.txt", server_file_id=1, server_version=1,
+                          chunk_hashes=[], local_mtime=100.0, local_size=50)
 
         hashes = ["hash1", "hash2", "hash3"]
         state.update_file("test.txt", chunk_hashes=hashes)
@@ -108,9 +122,19 @@ class TestFileOperations:
         assert file is not None
         assert file.chunk_hashes == hashes
 
-    def test_delete_file(self, state: LocalSyncState) -> None:
+    def test_remove_file(self, state: LocalSyncState) -> None:
         """Should delete a tracked file."""
-        state.add_file("test.txt")
+        state.mark_synced("test.txt", server_file_id=1, server_version=1,
+                          chunk_hashes=[], local_mtime=100.0, local_size=50)
+        state.remove_file("test.txt")
+
+        file = state.get_file("test.txt")
+        assert file is None
+
+    def test_delete_file_alias(self, state: LocalSyncState) -> None:
+        """delete_file should be an alias for remove_file."""
+        state.mark_synced("test.txt", server_file_id=1, server_version=1,
+                          chunk_hashes=[], local_mtime=100.0, local_size=50)
         state.delete_file("test.txt")
 
         file = state.get_file("test.txt")
@@ -118,9 +142,12 @@ class TestFileOperations:
 
     def test_list_files(self, state: LocalSyncState) -> None:
         """Should list all tracked files."""
-        state.add_file("a.txt")
-        state.add_file("b.txt")
-        state.add_file("c.txt")
+        state.mark_synced("a.txt", server_file_id=1, server_version=1,
+                          chunk_hashes=[], local_mtime=100.0, local_size=50)
+        state.mark_synced("b.txt", server_file_id=2, server_version=1,
+                          chunk_hashes=[], local_mtime=100.0, local_size=50)
+        state.mark_synced("c.txt", server_file_id=3, server_version=1,
+                          chunk_hashes=[], local_mtime=100.0, local_size=50)
 
         files = state.list_files()
         assert len(files) == 3
@@ -129,55 +156,100 @@ class TestFileOperations:
         assert "b.txt" in paths
         assert "c.txt" in paths
 
-    def test_list_files_by_status(self, state: LocalSyncState) -> None:
-        """Should filter files by status."""
-        state.add_file("new.txt", status=FileStatus.NEW)
-        state.add_file("modified.txt", status=FileStatus.MODIFIED)
-        state.add_file("synced.txt", status=FileStatus.SYNCED)
 
-        new_files = state.list_files(status=FileStatus.NEW)
-        assert len(new_files) == 1
-        assert new_files[0].path == "new.txt"
+class TestDeriveStatus:
+    """Tests for status derivation from disk state."""
 
-        modified = state.list_files(status=FileStatus.MODIFIED)
-        assert len(modified) == 1
-        assert modified[0].path == "modified.txt"
+    @pytest.fixture
+    def base_path(self, tmp_path: Path) -> Path:
+        """Create a base directory with some files."""
+        sync_dir = tmp_path / "sync"
+        sync_dir.mkdir()
+        return sync_dir
 
-    def test_mark_synced(self, state: LocalSyncState) -> None:
-        """Should mark file as synced with server info."""
-        state.add_file("test.txt")
+    def test_derive_status_new_file(self, base_path: Path) -> None:
+        """File on disk but not tracked should be NEW."""
+        (base_path / "new.txt").write_text("content")
 
-        state.mark_synced("test.txt", server_file_id=10, server_version=2, chunk_hashes=["a", "b"])
+        status = derive_status("new.txt", tracked=None, base_path=base_path)
+        assert status == FileStatus.NEW
 
-        file = state.get_file("test.txt")
-        assert file is not None
-        assert file.status == FileStatus.SYNCED
-        assert file.server_file_id == 10
-        assert file.server_version == 2
-        assert file.chunk_hashes == ["a", "b"]
-        assert file.last_synced_at is not None
+    def test_derive_status_deleted_file(self, base_path: Path) -> None:
+        """File tracked but not on disk should be DELETED."""
+        tracked = SyncedFile(
+            path="deleted.txt",
+            local_mtime=100.0,
+            local_size=50,
+            server_version=1,
+            chunk_hashes=[],
+            synced_at=time.time(),
+        )
 
-    def test_mark_modified(self, state: LocalSyncState) -> None:
-        """Should mark file as modified."""
-        state.add_file("test.txt", status=FileStatus.SYNCED)
-        state.mark_modified("test.txt")
+        status = derive_status("deleted.txt", tracked=tracked, base_path=base_path)
+        assert status == FileStatus.DELETED
 
-        file = state.get_file("test.txt")
-        assert file is not None
-        assert file.status == FileStatus.MODIFIED
+    def test_derive_status_synced(self, base_path: Path) -> None:
+        """File on disk matching tracked state should be SYNCED."""
+        file_path = base_path / "synced.txt"
+        file_path.write_text("content")
+        stat = file_path.stat()
 
-    def test_mark_conflict(self, state: LocalSyncState) -> None:
-        """Should mark file as having conflict."""
-        state.add_file("test.txt")
-        state.mark_conflict("test.txt")
+        tracked = SyncedFile(
+            path="synced.txt",
+            local_mtime=stat.st_mtime,
+            local_size=stat.st_size,
+            server_version=1,
+            chunk_hashes=[],
+            synced_at=time.time(),
+        )
 
-        file = state.get_file("test.txt")
-        assert file is not None
-        assert file.status == FileStatus.CONFLICT
+        status = derive_status("synced.txt", tracked=tracked, base_path=base_path)
+        assert status == FileStatus.SYNCED
+
+    def test_derive_status_modified_mtime(self, base_path: Path) -> None:
+        """File with different mtime should be MODIFIED."""
+        file_path = base_path / "modified.txt"
+        file_path.write_text("content")
+        stat = file_path.stat()
+
+        tracked = SyncedFile(
+            path="modified.txt",
+            local_mtime=stat.st_mtime - 100,  # Older mtime
+            local_size=stat.st_size,
+            server_version=1,
+            chunk_hashes=[],
+            synced_at=time.time(),
+        )
+
+        status = derive_status("modified.txt", tracked=tracked, base_path=base_path)
+        assert status == FileStatus.MODIFIED
+
+    def test_derive_status_modified_size(self, base_path: Path) -> None:
+        """File with different size should be MODIFIED."""
+        file_path = base_path / "modified.txt"
+        file_path.write_text("content")
+        stat = file_path.stat()
+
+        tracked = SyncedFile(
+            path="modified.txt",
+            local_mtime=stat.st_mtime,
+            local_size=stat.st_size + 100,  # Different size
+            server_version=1,
+            chunk_hashes=[],
+            synced_at=time.time(),
+        )
+
+        status = derive_status("modified.txt", tracked=tracked, base_path=base_path)
+        assert status == FileStatus.MODIFIED
+
+    def test_derive_status_none_when_nothing_exists(self, base_path: Path) -> None:
+        """Should return None if file doesn't exist anywhere."""
+        status = derive_status("nonexistent.txt", tracked=None, base_path=base_path)
+        assert status is None
 
 
-class TestPendingUploads:
-    """Tests for pending upload queue."""
+class TestBackwardsCompatibility:
+    """Tests for backwards compatibility methods (no-ops)."""
 
     @pytest.fixture
     def state(self, tmp_path: Path) -> LocalSyncState:
@@ -186,66 +258,101 @@ class TestPendingUploads:
         yield s
         s.close()
 
-    def test_add_pending_upload(self, state: LocalSyncState) -> None:
-        """Should add file to pending uploads."""
-        state.add_pending_upload("test.txt")
+    def test_add_file_is_noop(self, state: LocalSyncState) -> None:
+        """add_file should return placeholder but not persist."""
+        file = state.add_file("test.txt", local_mtime=100.0, local_size=50)
+        assert file.path == "test.txt"
 
-        pending = state.get_pending_uploads()
-        assert len(pending) == 1
-        assert pending[0].path == "test.txt"
-        assert pending[0].attempts == 0
+        # Should not persist
+        retrieved = state.get_file("test.txt")
+        assert retrieved is None
 
-    def test_pending_uploads_ordered(self, state: LocalSyncState) -> None:
-        """Should return pending uploads in detection order."""
-        state.add_pending_upload("first.txt")
-        state.add_pending_upload("second.txt")
-        state.add_pending_upload("third.txt")
+    def test_mark_modified_is_noop(self, state: LocalSyncState) -> None:
+        """mark_modified should be a no-op."""
+        state.mark_modified("test.txt")  # Should not raise
 
-        pending = state.get_pending_uploads()
-        assert len(pending) == 3
-        assert pending[0].path == "first.txt"
-        assert pending[1].path == "second.txt"
-        assert pending[2].path == "third.txt"
+    def test_mark_conflict_is_noop(self, state: LocalSyncState) -> None:
+        """mark_conflict should be a no-op."""
+        state.mark_conflict("test.txt")  # Should not raise
 
-    def test_mark_upload_attempt(self, state: LocalSyncState) -> None:
-        """Should record upload attempts."""
-        state.add_pending_upload("test.txt")
+    def test_mark_deleted_removes_file(self, state: LocalSyncState) -> None:
+        """mark_deleted should remove the file from tracking."""
+        state.mark_synced("test.txt", server_file_id=1, server_version=1,
+                          chunk_hashes=[], local_mtime=100.0, local_size=50)
+        state.mark_deleted("test.txt")
 
-        state.mark_upload_attempt("test.txt", error="Network error")
+        file = state.get_file("test.txt")
+        assert file is None
 
-        pending = state.get_pending_uploads()
-        assert pending[0].attempts == 1
-        assert pending[0].error == "Network error"
-        assert pending[0].last_attempt_at is not None
 
-    def test_remove_pending_upload(self, state: LocalSyncState) -> None:
-        """Should remove from pending uploads."""
-        state.add_pending_upload("test.txt")
-        state.remove_pending_upload("test.txt")
+class TestDeprecatedPendingUploads:
+    """Tests for deprecated pending upload methods (no-ops)."""
 
-        pending = state.get_pending_uploads()
-        assert len(pending) == 0
+    @pytest.fixture
+    def state(self, tmp_path: Path) -> LocalSyncState:
+        """Create a SyncState instance."""
+        s = LocalSyncState(tmp_path / "state.db")
+        yield s
+        s.close()
 
-    def test_clear_pending_uploads(self, state: LocalSyncState) -> None:
-        """Should clear all pending uploads."""
-        state.add_pending_upload("a.txt")
-        state.add_pending_upload("b.txt")
+    def test_add_pending_upload_is_noop(self, state: LocalSyncState) -> None:
+        """add_pending_upload should be a no-op."""
+        state.add_pending_upload("test.txt")  # Should not raise
 
-        state.clear_pending_uploads()
+    def test_get_pending_uploads_returns_empty(self, state: LocalSyncState) -> None:
+        """get_pending_uploads should return empty list."""
+        result = state.get_pending_uploads()
+        assert result == []
 
-        pending = state.get_pending_uploads()
-        assert len(pending) == 0
+    def test_mark_upload_attempt_is_noop(self, state: LocalSyncState) -> None:
+        """mark_upload_attempt should be a no-op."""
+        state.mark_upload_attempt("test.txt", error="Error")  # Should not raise
 
-    def test_add_pending_replaces(self, state: LocalSyncState) -> None:
-        """Adding same file again should reset it."""
-        state.add_pending_upload("test.txt")
-        state.mark_upload_attempt("test.txt", error="Error 1")
+    def test_remove_pending_upload_is_noop(self, state: LocalSyncState) -> None:
+        """remove_pending_upload should be a no-op."""
+        state.remove_pending_upload("test.txt")  # Should not raise
 
-        state.add_pending_upload("test.txt")
+    def test_clear_pending_uploads_is_noop(self, state: LocalSyncState) -> None:
+        """clear_pending_uploads should be a no-op."""
+        state.clear_pending_uploads()  # Should not raise
 
-        pending = state.get_pending_uploads()
-        assert len(pending) == 1
-        assert pending[0].attempts == 0
+
+class TestDeprecatedUploadProgress:
+    """Tests for deprecated upload progress methods (no-ops)."""
+
+    @pytest.fixture
+    def state(self, tmp_path: Path) -> LocalSyncState:
+        """Create a SyncState instance."""
+        s = LocalSyncState(tmp_path / "state.db")
+        yield s
+        s.close()
+
+    def test_start_upload_progress_returns_none(self, state: LocalSyncState) -> None:
+        """start_upload_progress should return None."""
+        result = state.start_upload_progress("test.txt", ["hash1", "hash2"])
+        assert result is None
+
+    def test_get_upload_progress_returns_none(self, state: LocalSyncState) -> None:
+        """get_upload_progress should return None."""
+        result = state.get_upload_progress("test.txt")
+        assert result is None
+
+    def test_mark_chunk_uploaded_is_noop(self, state: LocalSyncState) -> None:
+        """mark_chunk_uploaded should be a no-op."""
+        state.mark_chunk_uploaded("test.txt", "hash1")  # Should not raise
+
+    def test_clear_upload_progress_is_noop(self, state: LocalSyncState) -> None:
+        """clear_upload_progress should be a no-op."""
+        state.clear_upload_progress("test.txt")  # Should not raise
+
+    def test_get_remaining_chunks_returns_empty(self, state: LocalSyncState) -> None:
+        """get_remaining_chunks should return empty list."""
+        result = state.get_remaining_chunks("test.txt")
+        assert result == []
+
+    def test_clear_all_upload_progress_is_noop(self, state: LocalSyncState) -> None:
+        """clear_all_upload_progress should be a no-op."""
+        state.clear_all_upload_progress()  # Should not raise
 
 
 class TestSyncState:
@@ -292,165 +399,43 @@ class TestSyncState:
         state.set_last_server_version(42)
         assert state.get_last_server_version() == 42
 
+    def test_last_change_cursor(self, state: LocalSyncState) -> None:
+        """Should track last change cursor."""
+        assert state.get_last_change_cursor() is None
 
-class TestLocalFile:
-    """Tests for LocalFile dataclass."""
+        state.set_last_change_cursor("2024-01-01T00:00:00Z")
+        assert state.get_last_change_cursor() == "2024-01-01T00:00:00Z"
+
+
+class TestFileStatus:
+    """Tests for FileStatus enum."""
 
     def test_file_status_values(self) -> None:
         """FileStatus enum should have expected values."""
         assert FileStatus.SYNCED.value == "synced"
         assert FileStatus.MODIFIED.value == "modified"
-        assert FileStatus.PENDING_UPLOAD.value == "pending_upload"
-        assert FileStatus.CONFLICT.value == "conflict"
         assert FileStatus.NEW.value == "new"
+        assert FileStatus.DELETED.value == "deleted"
+        assert FileStatus.CONFLICT.value == "conflict"
 
 
-class TestUploadProgress:
-    """Tests for upload progress tracking (Phase 12)."""
+class TestSyncedFile:
+    """Tests for SyncedFile dataclass."""
 
-    @pytest.fixture
-    def state(self, tmp_path: Path) -> LocalSyncState:
-        """Create a SyncState instance."""
-        s = LocalSyncState(tmp_path / "state.db")
-        yield s
-        s.close()
+    def test_synced_file_creation(self) -> None:
+        """Should create SyncedFile with all fields."""
+        file = SyncedFile(
+            path="test.txt",
+            local_mtime=100.0,
+            local_size=50,
+            server_version=5,
+            chunk_hashes=["hash1", "hash2"],
+            synced_at=12345.0,
+        )
 
-    def test_start_upload_progress(self, state: LocalSyncState) -> None:
-        """Should start tracking upload progress."""
-        chunk_hashes = ["hash1", "hash2", "hash3"]
-        progress = state.start_upload_progress("test.txt", chunk_hashes)
-
-        assert progress.path == "test.txt"
-        assert progress.total_chunks == 3
-        assert progress.uploaded_chunks == 0
-        assert progress.chunk_hashes == chunk_hashes
-        assert progress.uploaded_hashes == []
-        assert progress.started_at > 0
-        assert progress.updated_at > 0
-
-    def test_get_upload_progress(self, state: LocalSyncState) -> None:
-        """Should retrieve upload progress."""
-        state.start_upload_progress("test.txt", ["hash1", "hash2"])
-
-        progress = state.get_upload_progress("test.txt")
-        assert progress is not None
-        assert progress.path == "test.txt"
-        assert progress.total_chunks == 2
-
-    def test_get_nonexistent_progress(self, state: LocalSyncState) -> None:
-        """Should return None for nonexistent progress."""
-        progress = state.get_upload_progress("nonexistent.txt")
-        assert progress is None
-
-    def test_mark_chunk_uploaded(self, state: LocalSyncState) -> None:
-        """Should mark chunks as uploaded."""
-        state.start_upload_progress("test.txt", ["hash1", "hash2", "hash3"])
-
-        state.mark_chunk_uploaded("test.txt", "hash1")
-
-        progress = state.get_upload_progress("test.txt")
-        assert progress is not None
-        assert progress.uploaded_chunks == 1
-        assert "hash1" in progress.uploaded_hashes
-
-    def test_mark_multiple_chunks_uploaded(self, state: LocalSyncState) -> None:
-        """Should track multiple uploaded chunks."""
-        state.start_upload_progress("test.txt", ["hash1", "hash2", "hash3"])
-
-        state.mark_chunk_uploaded("test.txt", "hash1")
-        state.mark_chunk_uploaded("test.txt", "hash2")
-
-        progress = state.get_upload_progress("test.txt")
-        assert progress is not None
-        assert progress.uploaded_chunks == 2
-        assert set(progress.uploaded_hashes) == {"hash1", "hash2"}
-
-    def test_mark_same_chunk_twice(self, state: LocalSyncState) -> None:
-        """Should not duplicate chunk in uploaded list."""
-        state.start_upload_progress("test.txt", ["hash1", "hash2"])
-
-        state.mark_chunk_uploaded("test.txt", "hash1")
-        state.mark_chunk_uploaded("test.txt", "hash1")
-
-        progress = state.get_upload_progress("test.txt")
-        assert progress is not None
-        assert progress.uploaded_chunks == 1
-        assert progress.uploaded_hashes.count("hash1") == 1
-
-    def test_clear_upload_progress(self, state: LocalSyncState) -> None:
-        """Should clear upload progress."""
-        state.start_upload_progress("test.txt", ["hash1"])
-        state.clear_upload_progress("test.txt")
-
-        progress = state.get_upload_progress("test.txt")
-        assert progress is None
-
-    def test_get_remaining_chunks(self, state: LocalSyncState) -> None:
-        """Should return chunks not yet uploaded."""
-        state.start_upload_progress("test.txt", ["hash1", "hash2", "hash3"])
-        state.mark_chunk_uploaded("test.txt", "hash2")
-
-        remaining = state.get_remaining_chunks("test.txt")
-        assert set(remaining) == {"hash1", "hash3"}
-
-    def test_get_remaining_chunks_nonexistent(self, state: LocalSyncState) -> None:
-        """Should return empty list for nonexistent file."""
-        remaining = state.get_remaining_chunks("nonexistent.txt")
-        assert remaining == []
-
-    def test_clear_all_upload_progress(self, state: LocalSyncState) -> None:
-        """Should clear all upload progress records."""
-        state.start_upload_progress("file1.txt", ["hash1"])
-        state.start_upload_progress("file2.txt", ["hash2"])
-
-        state.clear_all_upload_progress()
-
-        assert state.get_upload_progress("file1.txt") is None
-        assert state.get_upload_progress("file2.txt") is None
-
-    def test_upload_progress_is_complete(self, state: LocalSyncState) -> None:
-        """Should detect when upload is complete."""
-        state.start_upload_progress("test.txt", ["hash1", "hash2"])
-
-        progress = state.get_upload_progress("test.txt")
-        assert progress is not None
-        assert not progress.is_complete
-
-        state.mark_chunk_uploaded("test.txt", "hash1")
-        state.mark_chunk_uploaded("test.txt", "hash2")
-
-        progress = state.get_upload_progress("test.txt")
-        assert progress is not None
-        assert progress.is_complete
-
-    def test_upload_progress_percent(self, state: LocalSyncState) -> None:
-        """Should calculate upload percentage correctly."""
-        state.start_upload_progress("test.txt", ["hash1", "hash2", "hash3", "hash4"])
-
-        progress = state.get_upload_progress("test.txt")
-        assert progress is not None
-        assert progress.percent == 0.0
-
-        state.mark_chunk_uploaded("test.txt", "hash1")
-        progress = state.get_upload_progress("test.txt")
-        assert progress is not None
-        assert progress.percent == 25.0
-
-        state.mark_chunk_uploaded("test.txt", "hash2")
-        progress = state.get_upload_progress("test.txt")
-        assert progress is not None
-        assert progress.percent == 50.0
-
-    def test_start_progress_replaces_existing(self, state: LocalSyncState) -> None:
-        """Starting progress for same file should replace existing."""
-        state.start_upload_progress("test.txt", ["hash1", "hash2"])
-        state.mark_chunk_uploaded("test.txt", "hash1")
-
-        # Start new progress (file changed)
-        state.start_upload_progress("test.txt", ["new_hash1", "new_hash2", "new_hash3"])
-
-        progress = state.get_upload_progress("test.txt")
-        assert progress is not None
-        assert progress.total_chunks == 3
-        assert progress.uploaded_chunks == 0
-        assert progress.chunk_hashes == ["new_hash1", "new_hash2", "new_hash3"]
+        assert file.path == "test.txt"
+        assert file.local_mtime == 100.0
+        assert file.local_size == 50
+        assert file.server_version == 5
+        assert file.chunk_hashes == ["hash1", "hash2"]
+        assert file.synced_at == 12345.0

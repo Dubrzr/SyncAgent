@@ -16,6 +16,10 @@ Architecture:
 
     Flow: ChangeScanner → emit_events() → EventQueue → SyncCoordinator → Workers
 
+    Status Derivation:
+        File status is computed on-the-fly by comparing disk state with tracked state.
+        No status is stored in the database. See state.derive_status() for details.
+
 Usage with network resilience:
     # Fetch remote state first (with retry on network errors)
     while True:
@@ -41,7 +45,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from syncagent.client.state import FileStatus
 from syncagent.client.sync.ignore import IgnorePatterns
 from syncagent.client.sync.types import (
     LocalFileInfo,
@@ -277,17 +280,24 @@ class ChangeScanner:
 
             for change in result.changes:
                 local_file = self._state.get_file(change.file_path)
+                local_path = self._base_path / change.file_path
 
-                # Skip if local has unsynced changes
-                if local_file and local_file.status in (
-                    FileStatus.MODIFIED,
-                    FileStatus.NEW,
-                    FileStatus.CONFLICT,
-                ):
-                    logger.debug(
-                        f"Skipping remote {change.action} for {change.file_path}: local changes pending"
-                    )
-                    continue
+                # Skip if local has unsynced changes (derive status from disk)
+                if local_file is not None and local_path.exists():
+                    try:
+                        stat = local_path.stat()
+                        # File is modified if mtime or size changed since last sync
+                        if (
+                            stat.st_mtime > local_file.local_mtime
+                            or stat.st_size != local_file.local_size
+                        ):
+                            logger.debug(
+                                f"Skipping remote {change.action} for {change.file_path}: "
+                                "local changes pending"
+                            )
+                            continue
+                    except OSError:
+                        pass  # File might have been deleted
 
                 if change.action == "CREATED":
                     if local_file is None:
@@ -336,22 +346,28 @@ class ChangeScanner:
 
         for server_file in server_files:
             local_file = self._state.get_file(server_file.path)
+            local_path = self._base_path / server_file.path
 
             if local_file is None:
                 # New file on server
                 created.append(server_file.path)
 
             elif local_file.server_version != server_file.version:
-                # Skip if local has unsynced changes (will be handled as conflict by coordinator)
-                if local_file.status in (
-                    FileStatus.MODIFIED,
-                    FileStatus.NEW,
-                    FileStatus.CONFLICT,
-                ):
-                    logger.debug(
-                        f"Skipping remote change for {server_file.path}: local changes pending"
-                    )
-                    continue
+                # Skip if local has unsynced changes (derive status from disk)
+                if local_path.exists():
+                    try:
+                        stat = local_path.stat()
+                        if (
+                            stat.st_mtime > local_file.local_mtime
+                            or stat.st_size != local_file.local_size
+                        ):
+                            logger.debug(
+                                f"Skipping remote change for {server_file.path}: "
+                                "local changes pending"
+                            )
+                            continue
+                    except OSError:
+                        pass  # File might have been deleted
 
                 # Modified on server
                 modified.append(server_file.path)
@@ -364,6 +380,11 @@ class ChangeScanner:
 
         This method does not make network calls and should not fail due to
         network issues.
+
+        Status is derived on-the-fly by comparing disk state with tracked state:
+        - Not tracked → NEW
+        - mtime or size changed → MODIFIED
+        - Otherwise → SYNCED
 
         Returns:
             LocalChanges with LocalFileInfo (including mtime/size) for created/modified,
@@ -407,55 +428,34 @@ class ChangeScanner:
                 stat = file_path.stat()
 
                 if local_file is None:
-                    # New file
+                    # New file (not tracked in DB)
                     logger.debug(f"Found new local file: {relative_path}")
-                    self._state.add_file(
-                        relative_path,
-                        local_mtime=stat.st_mtime,
-                        local_size=stat.st_size,
-                        local_hash="",  # Will be computed on upload
-                        status=FileStatus.NEW,
-                    )
                     created.append(LocalFileInfo(
                         path=relative_path,
                         mtime=stat.st_mtime,
                         size=stat.st_size,
                     ))
 
-                elif local_file.status == FileStatus.SYNCED:
-                    # Check if modified since last sync
-                    local_mtime = local_file.local_mtime or 0.0
+                else:
+                    # Check if modified since last sync (derive status from mtime/size)
                     if (
-                        stat.st_mtime > local_mtime
+                        stat.st_mtime > local_file.local_mtime
                         or stat.st_size != local_file.local_size
                     ):
                         logger.debug(f"Found modified local file: {relative_path}")
-                        self._state.mark_modified(relative_path)
                         modified.append(LocalFileInfo(
                             path=relative_path,
                             mtime=stat.st_mtime,
                             size=stat.st_size,
                         ))
+                    # else: file is SYNCED, no action needed
 
-                elif local_file.status in (FileStatus.NEW, FileStatus.MODIFIED):
-                    # Already pending, add to list with current stats
-                    file_info = LocalFileInfo(
-                        path=relative_path,
-                        mtime=stat.st_mtime,
-                        size=stat.st_size,
-                    )
-                    if local_file.status == FileStatus.NEW:
-                        created.append(file_info)
-                    else:
-                        modified.append(file_info)
-
-        # Check for deleted files (in state DB but not on disk)
-        synced_files = self._state.list_files(status=FileStatus.SYNCED)
-        for local_file in synced_files:
+        # Check for deleted files (tracked in DB but not on disk)
+        tracked_files = self._state.list_files()
+        for local_file in tracked_files:
             if local_file.path not in found_paths:
                 # File was deleted locally
                 logger.debug(f"Found deleted local file: {local_file.path}")
-                self._state.mark_deleted(local_file.path)
                 deleted.append(local_file.path)
 
         return LocalChanges(created=created, modified=modified, deleted=deleted)

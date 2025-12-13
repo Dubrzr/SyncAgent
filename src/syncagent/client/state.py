@@ -1,15 +1,22 @@
 """Local state management for sync client.
 
 This module provides:
-- SyncState: SQLite-based local state tracking
-- File status tracking (synced, modified, pending_upload, conflict)
-- Pending uploads queue
-- Sync state persistence
+- LocalSyncState: SQLite-based local state tracking
+- SyncedFile: Represents a synchronized file
+
+Architecture:
+    The status (NEW, MODIFIED, SYNCED, DELETED) is computed on-the-fly
+    by comparing tracked state with actual disk state. This simplifies
+    the schema and eliminates state inconsistencies.
+
+    Upload progress is not tracked locally - the server's chunk_exists()
+    API is used to determine which chunks need uploading.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -18,93 +25,107 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
 
 class FileStatus(Enum):
-    """Status of a local file relative to server."""
+    """Derived status of a local file relative to server.
 
-    SYNCED = "synced"  # In sync with server
-    MODIFIED = "modified"  # Locally modified, not yet uploaded
-    PENDING_UPLOAD = "pending_upload"  # Queued for upload
-    CONFLICT = "conflict"  # Conflict detected
-    NEW = "new"  # New local file, not on server
-    DELETED = "deleted"  # Locally deleted, needs server deletion
+    Note: This status is computed, not stored. Use derive_status() function.
+    """
+
+    SYNCED = "synced"  # In sync with server (mtime/size match tracked)
+    MODIFIED = "modified"  # Locally modified (mtime/size differ from tracked)
+    NEW = "new"  # New local file (exists on disk but not tracked)
+    DELETED = "deleted"  # Locally deleted (tracked but not on disk)
+    CONFLICT = "conflict"  # Conflict state (for backwards compat)
 
 
 @dataclass
-class LocalFile:
-    """Represents a locally tracked file."""
+class SyncedFile:
+    """Represents a tracked file that has been synced with server.
 
-    id: int
+    Attributes:
+        path: Relative path from sync root.
+        local_mtime: File modification time when last synced.
+        local_size: File size when last synced.
+        server_version: Server version number (for conflict detection).
+        chunk_hashes: List of chunk hashes (for resume optimization).
+        synced_at: Timestamp when file was synced.
+    """
+
     path: str
-    server_file_id: int | None
-    server_version: int | None
-    local_mtime: float | None
-    local_size: int | None
-    local_hash: str | None
+    local_mtime: float
+    local_size: int
+    server_version: int
     chunk_hashes: list[str]
-    status: FileStatus
-    last_synced_at: float | None
+    synced_at: float
 
     @classmethod
-    def from_row(cls, row: sqlite3.Row) -> LocalFile:
-        """Create LocalFile from database row."""
+    def from_row(cls, row: sqlite3.Row) -> SyncedFile:
+        """Create SyncedFile from database row."""
         chunk_hashes = []
         if row["chunk_hashes"]:
             chunk_hashes = json.loads(row["chunk_hashes"])
         return cls(
-            id=row["id"],
             path=row["path"],
-            server_file_id=row["server_file_id"],
-            server_version=row["server_version"],
             local_mtime=row["local_mtime"],
             local_size=row["local_size"],
-            local_hash=row["local_hash"],
+            server_version=row["server_version"],
             chunk_hashes=chunk_hashes,
-            status=FileStatus(row["status"]),
-            last_synced_at=row["last_synced_at"],
+            synced_at=row["synced_at"],
         )
 
 
-@dataclass
-class PendingUpload:
-    """Represents a pending upload."""
-
-    id: int
-    path: str
-    detected_at: float
-    attempts: int
-    last_attempt_at: float | None
-    error: str | None
+# Backwards compatibility alias
+LocalFile = SyncedFile
 
 
-@dataclass
-class UploadProgress:
-    """Tracks chunk-level upload progress for resume capability."""
+def derive_status(
+    path: str,
+    tracked: SyncedFile | None,
+    base_path: Path,
+) -> FileStatus | None:
+    """Derive file status by comparing tracked state with disk.
 
-    id: int
-    path: str
-    total_chunks: int
-    uploaded_chunks: int
-    chunk_hashes: list[str]  # Hashes of all chunks
-    uploaded_hashes: list[str]  # Hashes of successfully uploaded chunks
-    started_at: float
-    updated_at: float
+    Args:
+        path: Relative path of the file.
+        tracked: Tracked file info from database (or None).
+        base_path: Base sync directory.
 
-    @property
-    def is_complete(self) -> bool:
-        """Check if all chunks have been uploaded."""
-        return self.uploaded_chunks >= self.total_chunks
+    Returns:
+        FileStatus or None if file doesn't exist anywhere.
+    """
+    local_path = base_path / path
 
-    @property
-    def percent(self) -> float:
-        """Get upload progress percentage."""
-        if self.total_chunks == 0:
-            return 100.0
-        return (self.uploaded_chunks / self.total_chunks) * 100
+    if tracked is None:
+        if local_path.exists():
+            return FileStatus.NEW
+        return None
+
+    if not local_path.exists():
+        return FileStatus.DELETED
+
+    try:
+        stat = local_path.stat()
+        if stat.st_mtime > tracked.local_mtime or stat.st_size != tracked.local_size:
+            return FileStatus.MODIFIED
+    except OSError:
+        # File might have been deleted between check and stat
+        return FileStatus.DELETED
+
+    return FileStatus.SYNCED
 
 
 class LocalSyncState:
-    """SQLite-based local state for sync client."""
+    """SQLite-based local state for sync client.
+
+    This is a simplified state that only tracks synchronized files.
+    File status is derived on-the-fly by comparing with disk state.
+    """
+
+    # Schema version for migrations
+    SCHEMA_VERSION = 2
 
     def __init__(self, db_path: Path) -> None:
         """Initialize local state database.
@@ -121,7 +142,7 @@ class LocalSyncState:
         self._conn = sqlite3.connect(
             str(self._db_path),
             check_same_thread=False,
-            isolation_level=None,  # Autocommit mode - each statement auto-commits
+            isolation_level=None,  # Autocommit mode
         )
         self._conn.row_factory = sqlite3.Row
 
@@ -130,35 +151,19 @@ class LocalSyncState:
         self._conn.execute("PRAGMA foreign_keys=ON")
 
         self._create_tables()
+        self._migrate_if_needed()
 
     def _create_tables(self) -> None:
         """Create database tables if they don't exist."""
         self._conn.executescript("""
-            -- Locally tracked files
-            CREATE TABLE IF NOT EXISTS local_files (
-                id INTEGER PRIMARY KEY,
-                path TEXT NOT NULL UNIQUE,
-                server_file_id INTEGER,
-                server_version INTEGER,
-                local_mtime REAL,
-                local_size INTEGER,
-                local_hash TEXT,
+            -- Simplified synced files table
+            CREATE TABLE IF NOT EXISTS synced_files (
+                path TEXT PRIMARY KEY,
+                local_mtime REAL NOT NULL,
+                local_size INTEGER NOT NULL,
+                server_version INTEGER NOT NULL,
                 chunk_hashes TEXT,
-                status TEXT DEFAULT 'synced',
-                last_synced_at REAL
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_local_files_status
-                ON local_files(status);
-
-            -- Pending uploads queue
-            CREATE TABLE IF NOT EXISTS pending_uploads (
-                id INTEGER PRIMARY KEY,
-                path TEXT NOT NULL UNIQUE,
-                detected_at REAL NOT NULL,
-                attempts INTEGER DEFAULT 0,
-                last_attempt_at REAL,
-                error TEXT
+                synced_at REAL NOT NULL
             );
 
             -- Key-value sync state
@@ -167,22 +172,73 @@ class LocalSyncState:
                 value TEXT
             );
 
-            -- Upload progress for chunk-level resume (Phase 12)
-            CREATE TABLE IF NOT EXISTS upload_progress (
-                id INTEGER PRIMARY KEY,
-                path TEXT NOT NULL UNIQUE,
-                total_chunks INTEGER NOT NULL,
-                uploaded_chunks INTEGER DEFAULT 0,
-                chunk_hashes TEXT NOT NULL,
-                uploaded_hashes TEXT DEFAULT '[]',
-                started_at REAL NOT NULL,
-                updated_at REAL NOT NULL
+            -- Schema version tracking
+            CREATE TABLE IF NOT EXISTS schema_version (
+                version INTEGER PRIMARY KEY
             );
-
-            CREATE INDEX IF NOT EXISTS idx_upload_progress_path
-                ON upload_progress(path);
         """)
-        # Autocommit mode - no explicit commit needed
+
+    def _migrate_if_needed(self) -> None:
+        """Run migrations if schema version is old."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT version FROM schema_version ORDER BY version DESC LIMIT 1"
+            )
+            row = cursor.fetchone()
+            current_version = row["version"] if row else 0
+
+            if current_version < self.SCHEMA_VERSION:
+                self._run_migrations(current_version)
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO schema_version (version) VALUES (?)",
+                    (self.SCHEMA_VERSION,),
+                )
+
+    def _run_migrations(self, from_version: int) -> None:
+        """Run migrations from given version to current."""
+        if from_version < 2:
+            # Migrate from old schema (local_files) to new (synced_files)
+            self._migrate_v1_to_v2()
+
+    def _migrate_v1_to_v2(self) -> None:
+        """Migrate from v1 (local_files with status) to v2 (synced_files)."""
+        # Check if old table exists
+        cursor = self._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='local_files'"
+        )
+        if cursor.fetchone() is None:
+            logger.debug("No local_files table to migrate")
+            return
+
+        logger.info("Migrating state database from v1 to v2...")
+
+        # Copy synced files to new table
+        self._conn.executescript("""
+            -- Copy only SYNCED files (status='synced')
+            INSERT OR IGNORE INTO synced_files (
+                path, local_mtime, local_size, server_version, chunk_hashes, synced_at
+            )
+            SELECT
+                path,
+                COALESCE(local_mtime, 0),
+                COALESCE(local_size, 0),
+                COALESCE(server_version, 0),
+                chunk_hashes,
+                COALESCE(last_synced_at, 0)
+            FROM local_files
+            WHERE status = 'synced' AND server_version IS NOT NULL;
+
+            -- Drop old tables
+            DROP TABLE IF EXISTS local_files;
+            DROP TABLE IF EXISTS pending_uploads;
+            DROP TABLE IF EXISTS upload_progress;
+
+            -- Drop old indexes
+            DROP INDEX IF EXISTS idx_local_files_status;
+            DROP INDEX IF EXISTS idx_upload_progress_path;
+        """)
+
+        logger.info("Migration complete: old tables dropped, synced files preserved")
 
     def close(self) -> None:
         """Close the database connection."""
@@ -190,81 +246,80 @@ class LocalSyncState:
 
     # === File operations ===
 
-    def add_file(
-        self,
-        path: str,
-        *,
-        local_mtime: float | None = None,
-        local_size: int | None = None,
-        local_hash: str | None = None,
-        status: FileStatus = FileStatus.NEW,
-    ) -> LocalFile:
-        """Add a new file to tracking.
-
-        Args:
-            path: Relative path of the file.
-            local_mtime: Local modification time.
-            local_size: Local file size.
-            local_hash: Hash of local content.
-            status: Initial status.
-
-        Returns:
-            Created LocalFile record.
-        """
-        with self._lock:
-            cursor = self._conn.execute(
-                """
-                INSERT INTO local_files (path, local_mtime, local_size, local_hash, status)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (path, local_mtime, local_size, local_hash, status.value),
-            )
-            lastrowid = cursor.lastrowid or 0
-
-        return LocalFile(
-            id=lastrowid,
-            path=path,
-            server_file_id=None,
-            server_version=None,
-            local_mtime=local_mtime,
-            local_size=local_size,
-            local_hash=local_hash,
-            chunk_hashes=[],
-            status=status,
-            last_synced_at=None,
-        )
-
-    def get_file(self, path: str) -> LocalFile | None:
-        """Get a file by path.
+    def get_file(self, path: str) -> SyncedFile | None:
+        """Get a tracked file by path.
 
         Args:
             path: Relative path of the file.
 
         Returns:
-            LocalFile if found, None otherwise.
+            SyncedFile if found, None otherwise.
         """
         with self._lock:
             cursor = self._conn.execute(
-                "SELECT * FROM local_files WHERE path = ?",
+                "SELECT * FROM synced_files WHERE path = ?",
                 (path,),
             )
             row = cursor.fetchone()
         if row is None:
             return None
-        return LocalFile.from_row(row)
+        return SyncedFile.from_row(row)
+
+    def list_files(self) -> list[SyncedFile]:
+        """List all tracked files.
+
+        Returns:
+            List of SyncedFile records.
+        """
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM synced_files ORDER BY path"
+            )
+            rows = cursor.fetchall()
+        return [SyncedFile.from_row(row) for row in rows]
+
+    def mark_synced(
+        self,
+        path: str,
+        server_file_id: int,  # Kept for backwards compat, ignored
+        server_version: int,
+        chunk_hashes: list[str],
+        local_mtime: float | None = None,
+        local_size: int | None = None,
+    ) -> None:
+        """Mark a file as successfully synced (upsert).
+
+        Args:
+            path: Relative path.
+            server_file_id: Ignored (kept for backwards compatibility).
+            server_version: Version on server.
+            chunk_hashes: List of chunk hashes.
+            local_mtime: Local file mtime.
+            local_size: Local file size.
+        """
+        now = time.time()
+        mtime = local_mtime if local_mtime is not None else now
+        size = local_size if local_size is not None else 0
+
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT OR REPLACE INTO synced_files (
+                    path, local_mtime, local_size, server_version, chunk_hashes, synced_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (path, mtime, size, server_version, json.dumps(chunk_hashes), now),
+            )
 
     def update_file(
         self,
         path: str,
         *,
-        server_file_id: int | None = None,
-        server_version: int | None = None,
         local_mtime: float | None = None,
         local_size: int | None = None,
-        local_hash: str | None = None,
+        server_version: int | None = None,
         chunk_hashes: list[str] | None = None,
-        status: FileStatus | None = None,
-        last_synced_at: float | None = None,
+        **kwargs: Any,  # Ignore other params for backwards compat
     ) -> None:
         """Update file metadata.
 
@@ -273,232 +328,98 @@ class LocalSyncState:
         updates: list[str] = []
         values: list[Any] = []
 
-        if server_file_id is not None:
-            updates.append("server_file_id = ?")
-            values.append(server_file_id)
-        if server_version is not None:
-            updates.append("server_version = ?")
-            values.append(server_version)
         if local_mtime is not None:
             updates.append("local_mtime = ?")
             values.append(local_mtime)
         if local_size is not None:
             updates.append("local_size = ?")
             values.append(local_size)
-        if local_hash is not None:
-            updates.append("local_hash = ?")
-            values.append(local_hash)
+        if server_version is not None:
+            updates.append("server_version = ?")
+            values.append(server_version)
         if chunk_hashes is not None:
             updates.append("chunk_hashes = ?")
             values.append(json.dumps(chunk_hashes))
-        if status is not None:
-            updates.append("status = ?")
-            values.append(status.value)
-        if last_synced_at is not None:
-            updates.append("last_synced_at = ?")
-            values.append(last_synced_at)
 
         if not updates:
             return
 
+        updates.append("synced_at = ?")
+        values.append(time.time())
         values.append(path)
+
         with self._lock:
             self._conn.execute(
-                f"UPDATE local_files SET {', '.join(updates)} WHERE path = ?",
+                f"UPDATE synced_files SET {', '.join(updates)} WHERE path = ?",
                 values,
             )
-
-    def delete_file(self, path: str) -> None:
-        """Delete a file from tracking.
-
-        Args:
-            path: Relative path of the file.
-        """
-        with self._lock:
-            self._conn.execute("DELETE FROM local_files WHERE path = ?", (path,))
-
-    def list_files(self, status: FileStatus | None = None) -> list[LocalFile]:
-        """List tracked files.
-
-        Args:
-            status: Optional status filter.
-
-        Returns:
-            List of LocalFile records.
-        """
-        with self._lock:
-            if status:
-                cursor = self._conn.execute(
-                    "SELECT * FROM local_files WHERE status = ? ORDER BY path",
-                    (status.value,),
-                )
-            else:
-                cursor = self._conn.execute("SELECT * FROM local_files ORDER BY path")
-            rows = cursor.fetchall()
-
-        return [LocalFile.from_row(row) for row in rows]
-
-    def mark_synced(
-        self,
-        path: str,
-        server_file_id: int,
-        server_version: int,
-        chunk_hashes: list[str],
-        local_mtime: float | None = None,
-        local_size: int | None = None,
-    ) -> None:
-        """Mark a file as successfully synced (upsert).
-
-        Creates the file record if it doesn't exist, or updates if it does.
-        This handles both upload (file exists as NEW/MODIFIED) and download
-        (file may not exist yet for REMOTE_CREATED).
-
-        Args:
-            path: Relative path.
-            server_file_id: ID on server.
-            server_version: Version on server.
-            chunk_hashes: List of chunk hashes.
-            local_mtime: Optional local file mtime (for downloads).
-            local_size: Optional local file size (for downloads).
-        """
-        now = time.time()
-        with self._lock:
-            # Check if file exists
-            existing = self.get_file(path)
-            if existing is None:
-                # Insert new record (download case)
-                self._conn.execute(
-                    """
-                    INSERT INTO local_files (
-                        path, server_file_id, server_version, chunk_hashes,
-                        status, last_synced_at, local_mtime, local_size, local_hash
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)
-                    """,
-                    (path, server_file_id, server_version, json.dumps(chunk_hashes),
-                     FileStatus.SYNCED.value, now, local_mtime, local_size),
-                )
-            else:
-                # Update existing record
-                if local_mtime is not None and local_size is not None:
-                    # Download case: also update local file info
-                    self._conn.execute(
-                        """
-                        UPDATE local_files
-                        SET server_file_id = ?, server_version = ?, chunk_hashes = ?,
-                            status = ?, last_synced_at = ?, local_mtime = ?, local_size = ?
-                        WHERE path = ?
-                        """,
-                        (server_file_id, server_version, json.dumps(chunk_hashes),
-                         FileStatus.SYNCED.value, now, local_mtime, local_size, path),
-                    )
-                else:
-                    # Upload case: keep existing local file info
-                    self._conn.execute(
-                        """
-                        UPDATE local_files
-                        SET server_file_id = ?, server_version = ?, chunk_hashes = ?,
-                            status = ?, last_synced_at = ?
-                        WHERE path = ?
-                        """,
-                        (server_file_id, server_version, json.dumps(chunk_hashes),
-                         FileStatus.SYNCED.value, now, path),
-                    )
-
-    def mark_modified(self, path: str) -> None:
-        """Mark a file as locally modified."""
-        self.update_file(path, status=FileStatus.MODIFIED)
-
-    def mark_conflict(self, path: str) -> None:
-        """Mark a file as having a conflict."""
-        self.update_file(path, status=FileStatus.CONFLICT)
-
-    def mark_deleted(self, path: str) -> None:
-        """Mark a file as locally deleted (needs server deletion)."""
-        self.update_file(path, status=FileStatus.DELETED)
 
     def remove_file(self, path: str) -> None:
         """Remove a file from the state database."""
         with self._lock:
-            self._conn.execute("DELETE FROM local_files WHERE path = ?", (path,))
+            self._conn.execute("DELETE FROM synced_files WHERE path = ?", (path,))
 
-    # === Pending uploads ===
+    # Alias for backwards compatibility
+    delete_file = remove_file
 
-    def add_pending_upload(self, path: str) -> None:
-        """Add a file to the pending upload queue.
+    # === Backwards compatibility methods ===
+    # These methods are kept for compatibility with existing code
+    # that uses the old status-based API
 
-        Args:
-            path: Relative path of the file.
+    def add_file(
+        self,
+        path: str,
+        *,
+        local_mtime: float | None = None,
+        local_size: int | None = None,
+        local_hash: str | None = None,  # Ignored
+        status: FileStatus = FileStatus.NEW,  # Ignored
+    ) -> SyncedFile:
+        """Add a new file to tracking.
+
+        Note: In simplified state, we only track synced files.
+        New files are implicitly tracked when they appear on disk.
+        This method is kept for backwards compatibility but does nothing
+        until the file is actually synced.
         """
-        with self._lock:
-            self._conn.execute(
-                """
-                INSERT OR REPLACE INTO pending_uploads (path, detected_at, attempts)
-                VALUES (?, ?, 0)
-                """,
-                (path, time.time()),
-            )
+        # In simplified state, we don't track un-synced files
+        # Return a placeholder that indicates "not tracked"
+        return SyncedFile(
+            path=path,
+            local_mtime=local_mtime or 0.0,
+            local_size=local_size or 0,
+            server_version=0,
+            chunk_hashes=[],
+            synced_at=0.0,
+        )
 
-    def get_pending_uploads(self) -> list[PendingUpload]:
-        """Get all pending uploads ordered by detection time."""
-        with self._lock:
-            cursor = self._conn.execute(
-                "SELECT * FROM pending_uploads ORDER BY detected_at"
-            )
-            rows = cursor.fetchall()
-        return [
-            PendingUpload(
-                id=row["id"],
-                path=row["path"],
-                detected_at=row["detected_at"],
-                attempts=row["attempts"],
-                last_attempt_at=row["last_attempt_at"],
-                error=row["error"],
-            )
-            for row in rows
-        ]
+    def mark_modified(self, path: str) -> None:
+        """Mark a file as locally modified.
 
-    def mark_upload_attempt(self, path: str, error: str | None = None) -> None:
-        """Record an upload attempt.
-
-        Args:
-            path: Relative path.
-            error: Error message if failed.
+        Note: In simplified state, status is derived from disk state.
+        This method is kept for backwards compatibility but does nothing.
         """
-        with self._lock:
-            self._conn.execute(
-                """
-                UPDATE pending_uploads
-                SET attempts = attempts + 1, last_attempt_at = ?, error = ?
-                WHERE path = ?
-                """,
-                (time.time(), error, path),
-            )
+        pass  # Status is derived, not stored
 
-    def remove_pending_upload(self, path: str) -> None:
-        """Remove a file from pending uploads.
+    def mark_conflict(self, path: str) -> None:
+        """Mark a file as having a conflict.
 
-        Args:
-            path: Relative path.
+        Note: In simplified state, conflicts are handled differently.
+        This method is kept for backwards compatibility but does nothing.
         """
-        with self._lock:
-            self._conn.execute("DELETE FROM pending_uploads WHERE path = ?", (path,))
+        pass  # Conflicts are handled by creating .conflict-* files
 
-    def clear_pending_uploads(self) -> None:
-        """Clear all pending uploads."""
-        with self._lock:
-            self._conn.execute("DELETE FROM pending_uploads")
+    def mark_deleted(self, path: str) -> None:
+        """Mark a file as locally deleted.
+
+        Note: In simplified state, this removes the file from tracking.
+        """
+        self.remove_file(path)
 
     # === Sync state ===
 
     def get_state(self, key: str) -> str | None:
-        """Get a sync state value.
-
-        Args:
-            key: State key.
-
-        Returns:
-            State value or None.
-        """
+        """Get a sync state value."""
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT value FROM sync_state WHERE key = ?",
@@ -508,12 +429,7 @@ class LocalSyncState:
         return row["value"] if row else None
 
     def set_state(self, key: str, value: str) -> None:
-        """Set a sync state value.
-
-        Args:
-            key: State key.
-            value: State value.
-        """
+        """Set a sync state value."""
         with self._lock:
             self._conn.execute(
                 "INSERT OR REPLACE INTO sync_state (key, value) VALUES (?, ?)",
@@ -539,149 +455,59 @@ class LocalSyncState:
         self.set_state("last_server_version", str(version))
 
     def get_last_change_cursor(self) -> str | None:
-        """Get the last change cursor timestamp (ISO format).
-
-        Used for incremental sync via /api/changes endpoint.
-        """
+        """Get the last change cursor timestamp (ISO format)."""
         return self.get_state("last_change_cursor")
 
     def set_last_change_cursor(self, timestamp: str) -> None:
-        """Set the last change cursor timestamp (ISO format).
-
-        Used for incremental sync via /api/changes endpoint.
-        """
+        """Set the last change cursor timestamp (ISO format)."""
         self.set_state("last_change_cursor", timestamp)
 
-    # === Upload Progress (Phase 12) ===
+    # === Deprecated methods (no-op for backwards compatibility) ===
+
+    def add_pending_upload(self, path: str) -> None:
+        """Deprecated: Pending uploads are not tracked in simplified state."""
+        pass
+
+    def get_pending_uploads(self) -> list[Any]:
+        """Deprecated: Returns empty list."""
+        return []
+
+    def mark_upload_attempt(self, path: str, error: str | None = None) -> None:
+        """Deprecated: No-op."""
+        pass
+
+    def remove_pending_upload(self, path: str) -> None:
+        """Deprecated: No-op."""
+        pass
+
+    def clear_pending_uploads(self) -> None:
+        """Deprecated: No-op."""
+        pass
 
     def start_upload_progress(
         self,
         path: str,
         chunk_hashes: list[str],
-    ) -> UploadProgress:
-        """Start tracking upload progress for a file.
+    ) -> Any:
+        """Deprecated: Upload progress tracked via server chunk_exists()."""
+        return None
 
-        Args:
-            path: Relative path of the file.
-            chunk_hashes: List of all chunk hashes for the file.
-
-        Returns:
-            UploadProgress record.
-        """
-        now = time.time()
-        with self._lock:
-            self._conn.execute(
-                """
-                INSERT OR REPLACE INTO upload_progress
-                (path, total_chunks, uploaded_chunks, chunk_hashes, uploaded_hashes, started_at, updated_at)
-                VALUES (?, ?, 0, ?, '[]', ?, ?)
-                """,
-                (path, len(chunk_hashes), json.dumps(chunk_hashes), now, now),
-            )
-
-        return UploadProgress(
-            id=0,
-            path=path,
-            total_chunks=len(chunk_hashes),
-            uploaded_chunks=0,
-            chunk_hashes=chunk_hashes,
-            uploaded_hashes=[],
-            started_at=now,
-            updated_at=now,
-        )
-
-    def get_upload_progress(self, path: str) -> UploadProgress | None:
-        """Get upload progress for a file.
-
-        Args:
-            path: Relative path of the file.
-
-        Returns:
-            UploadProgress if found, None otherwise.
-        """
-        with self._lock:
-            cursor = self._conn.execute(
-                "SELECT * FROM upload_progress WHERE path = ?",
-                (path,),
-            )
-            row = cursor.fetchone()
-        if row is None:
-            return None
-
-        return UploadProgress(
-            id=row["id"],
-            path=row["path"],
-            total_chunks=row["total_chunks"],
-            uploaded_chunks=row["uploaded_chunks"],
-            chunk_hashes=json.loads(row["chunk_hashes"]),
-            uploaded_hashes=json.loads(row["uploaded_hashes"]),
-            started_at=row["started_at"],
-            updated_at=row["updated_at"],
-        )
+    def get_upload_progress(self, path: str) -> Any:
+        """Deprecated: Returns None."""
+        return None
 
     def mark_chunk_uploaded(self, path: str, chunk_hash: str) -> None:
-        """Mark a chunk as successfully uploaded.
-
-        Args:
-            path: Relative path of the file.
-            chunk_hash: Hash of the uploaded chunk.
-        """
-        with self._lock:
-            # Get current uploaded hashes
-            cursor = self._conn.execute(
-                "SELECT * FROM upload_progress WHERE path = ?",
-                (path,),
-            )
-            row = cursor.fetchone()
-            if row is None:
-                return
-
-            uploaded_hashes = json.loads(row["uploaded_hashes"])
-
-            # Add chunk hash if not already present
-            if chunk_hash not in uploaded_hashes:
-                uploaded_hashes.append(chunk_hash)
-
-            self._conn.execute(
-                """
-                UPDATE upload_progress
-                SET uploaded_chunks = ?, uploaded_hashes = ?, updated_at = ?
-                WHERE path = ?
-                """,
-                (
-                    len(uploaded_hashes),
-                    json.dumps(uploaded_hashes),
-                    time.time(),
-                    path,
-                ),
-            )
+        """Deprecated: No-op."""
+        pass
 
     def clear_upload_progress(self, path: str) -> None:
-        """Clear upload progress for a file (after successful upload).
-
-        Args:
-            path: Relative path of the file.
-        """
-        with self._lock:
-            self._conn.execute("DELETE FROM upload_progress WHERE path = ?", (path,))
+        """Deprecated: No-op."""
+        pass
 
     def get_remaining_chunks(self, path: str) -> list[str]:
-        """Get list of chunk hashes that haven't been uploaded yet.
-
-        Args:
-            path: Relative path of the file.
-
-        Returns:
-            List of chunk hashes still to upload.
-        """
-        progress = self.get_upload_progress(path)
-        if progress is None:
-            return []
-
-        uploaded_set = set(progress.uploaded_hashes)
-        return [h for h in progress.chunk_hashes if h not in uploaded_set]
+        """Deprecated: Returns empty list."""
+        return []
 
     def clear_all_upload_progress(self) -> None:
-        """Clear all upload progress records."""
-        with self._lock:
-            self._conn.execute("DELETE FROM upload_progress")
+        """Deprecated: No-op."""
+        pass
