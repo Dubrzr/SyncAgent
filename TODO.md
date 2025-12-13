@@ -461,6 +461,18 @@ Evidémment pour les étapes suivantes, lancer les tests entre temps pour vérif
   - Core modules well tested (80-100%)
   - Lower coverage on platform-specific code (CLI, protocol, notifications) - hard to test without mocking OS APIs
 
+### 16.5
+
+- [ ] Le syncagent tray peut être ajouté à syncagent sync comme une option, et supprimé, je ne vois pas l'intérêt de le lancer séparément?
+
+### 16.6 
+
+Je ne comprends pas l'intérêt de la commande syncagent unlock
+
+### 16.6
+
+- [ ] Implémenter une animation visuelle sur les transferts en cours  
+
 ## 17 Real life tests
 
  

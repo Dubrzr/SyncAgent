@@ -372,7 +372,3 @@ class ChangeScanner:
 
         # Note: fallback doesn't detect remote deletions - need incremental for that
         return {"created": created, "modified": modified, "deleted": []}
-
-
-# Backward compatibility alias
-SyncEngine = ChangeScanner

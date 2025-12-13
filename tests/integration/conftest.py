@@ -19,7 +19,7 @@ from httpx import Client
 
 from syncagent.client.api import SyncClient
 from syncagent.client.state import SyncState
-from syncagent.client.sync import FileDownloader, FileUploader, SyncEngine
+from syncagent.client.sync import ChangeScanner, FileDownloader, FileUploader
 from syncagent.core.config import ServerConfig
 from syncagent.core.crypto import derive_key, generate_salt
 from syncagent.server.app import create_app
@@ -57,7 +57,7 @@ class SyncTestClient:
     encryption_key: bytes
     uploader: FileUploader
     downloader: FileDownloader
-    engine: SyncEngine | None = None
+    scanner: ChangeScanner | None = None
 
     def create_file(self, relative_path: str, content: str | bytes) -> Path:
         """Create a file in the sync folder."""

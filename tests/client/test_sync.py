@@ -8,10 +8,10 @@ import pytest
 from syncagent.client.api import ConflictError, NotFoundError, ServerFile, SyncClient
 from syncagent.client.state import FileStatus, SyncState
 from syncagent.client.sync import (
+    ChangeScanner,
     DownloadError,
     FileDownloader,
     FileUploader,
-    SyncEngine,
     UploadError,
     generate_conflict_filename,
     get_machine_name,
@@ -275,10 +275,10 @@ class TestFileDownloader:
             downloader.download_file(server_file, tmp_path / "missing.txt")
 
 
-class TestSyncEngine:
-    """Tests for SyncEngine (event-based scanner).
+class TestChangeScanner:
+    """Tests for ChangeScanner (event-based scanner).
 
-    SyncEngine scans for changes and pushes SyncEvent objects to the queue.
+    ChangeScanner scans for changes and pushes SyncEvent objects to the queue.
     Actual sync work is done by Workers via the Coordinator.
     """
 
@@ -301,7 +301,7 @@ class TestSyncEngine:
         mock_client.list_files.return_value = []
 
         queue = EventQueue()
-        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
         result = engine.scan()
 
         assert "new.txt" in result.uploaded
@@ -345,7 +345,7 @@ class TestSyncEngine:
         mock_client.list_files.return_value = []
 
         queue = EventQueue()
-        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
         result = engine.scan()
 
         assert "existing.txt" in result.uploaded
@@ -374,7 +374,7 @@ class TestSyncEngine:
         mock_client.list_files.return_value = []
 
         queue = EventQueue()
-        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
         result = engine.scan()
 
         assert "deleted.txt" in result.deleted
@@ -405,7 +405,7 @@ class TestSyncEngine:
         mock_client.list_files.return_value = [server_file]
 
         queue = EventQueue()
-        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
         result = engine.scan()
 
         assert "remote.txt" in result.downloaded
@@ -440,7 +440,7 @@ class TestSyncEngine:
         mock_client.list_files.return_value = [server_file]
 
         queue = EventQueue()
-        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
         result = engine.scan()
 
         assert "remote.txt" in result.downloaded
@@ -484,7 +484,7 @@ class TestSyncEngine:
         mock_client.list_files.return_value = [server_file]
 
         queue = EventQueue()
-        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
         result = engine.scan()
 
         assert "synced.txt" not in result.uploaded
@@ -523,7 +523,7 @@ class TestSyncEngine:
         mock_client.list_files.return_value = [server_file]
 
         queue = EventQueue()
-        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
         result = engine.scan()
 
         # Should queue local upload, not remote download
@@ -559,7 +559,7 @@ class TestSyncEngine:
         mock_client.list_files.return_value = []
 
         queue = EventQueue()
-        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
         result = engine.scan()
 
         assert "pending.txt" in result.uploaded
@@ -586,7 +586,7 @@ class TestSyncEngine:
         mock_client.list_files.return_value = []
 
         queue = EventQueue()
-        engine = SyncEngine(mock_client, sync_state, base_path, queue)
+        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
         result = engine.scan()
 
         assert "good.txt" in result.uploaded

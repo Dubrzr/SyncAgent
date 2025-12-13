@@ -6,7 +6,6 @@ Architecture:
 Components:
 - **ChangeScanner**: Scans local/remote for changes, pushes events to queue
   - Uses /api/changes for incremental remote sync (Phase 14.2)
-  - SyncEngine is a backward compatibility alias
 - **EventQueue**: Thread-safe priority queue for sync events
 - **SyncCoordinator**: Processes events, applies decision matrix, dispatches to workers
 - **Workers**: Execute transfers (UploadWorker, DownloadWorker, DeleteWorker)
@@ -20,12 +19,12 @@ Low-level transfer:
 All public symbols are re-exported here for backwards compatibility.
 """
 
+from syncagent.client.sync.change_scanner import ChangeScanner
 from syncagent.client.sync.conflict import (
     generate_conflict_filename,
     get_machine_name,
 )
 from syncagent.client.sync.coordinator import SyncCoordinator
-from syncagent.client.sync.engine import ChangeScanner, SyncEngine
 from syncagent.client.sync.ignore import IgnorePatterns
 from syncagent.client.sync.queue import EventQueue
 from syncagent.client.sync.retry import (
@@ -116,7 +115,6 @@ __all__ = [
     "ChangeScanner",
     "FileDownloader",
     "FileUploader",
-    "SyncEngine",  # Backward compatibility alias
     # Event Queue & Coordinator
     "EventQueue",
     "SyncCoordinator",
