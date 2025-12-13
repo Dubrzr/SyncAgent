@@ -222,14 +222,17 @@ class FileUploader:
                 chunks=chunk_hashes,
             )
 
-        # Clear upload progress and mark as synced
+        # Clear upload progress and mark as synced with current file stats
         if self._state:
             self._state.clear_upload_progress(relative_path)
+            stat = local_path.stat()
             self._state.mark_synced(
                 relative_path,
                 server_file_id=server_file.id,
                 server_version=server_file.version,
                 chunk_hashes=chunk_hashes,
+                local_mtime=stat.st_mtime,
+                local_size=stat.st_size,
             )
 
         logger.info(

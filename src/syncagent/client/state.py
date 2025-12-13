@@ -213,8 +213,8 @@ class LocalSyncState:
         server_file_id: int,  # Kept for backwards compat, ignored
         server_version: int,
         chunk_hashes: list[str],
-        local_mtime: float | None = None,
-        local_size: int | None = None,
+        local_mtime: float,
+        local_size: int,
     ) -> None:
         """Mark a file as successfully synced (upsert).
 
@@ -223,12 +223,10 @@ class LocalSyncState:
             server_file_id: Ignored (kept for backwards compatibility).
             server_version: Version on server.
             chunk_hashes: List of chunk hashes.
-            local_mtime: Local file mtime.
-            local_size: Local file size.
+            local_mtime: Local file mtime (REQUIRED to detect future modifications).
+            local_size: Local file size (REQUIRED to detect future modifications).
         """
         now = time.time()
-        mtime = local_mtime if local_mtime is not None else now
-        size = local_size if local_size is not None else 0
 
         with self._lock:
             self._conn.execute(
@@ -237,7 +235,7 @@ class LocalSyncState:
                     path, local_mtime, local_size, server_version, chunk_hashes, synced_at
                 ) VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (path, mtime, size, server_version, json.dumps(chunk_hashes), now),
+                (path, local_mtime, local_size, server_version, json.dumps(chunk_hashes), now),
             )
 
     def update_file(
