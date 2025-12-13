@@ -7,10 +7,11 @@ This module provides:
 - SyncResult: Overall sync operation result
 - ConflictInfo: Conflict detection information
 - SyncEventType, SyncEventSource, SyncEvent: Event queue types
-- TransferType, TransferStatus, TransferState: Coordinator types
 - ConflictType: Types of conflicts (pre/mid/post transfer)
 - CoordinatorState, CoordinatorStats: Coordinator state
 - Type aliases for callbacks
+
+Note: TransferType, TransferStatus, Transfer are now in domain/transfers.py
 """
 
 from __future__ import annotations
@@ -281,14 +282,6 @@ class SyncEvent:
 # =============================================================================
 
 
-class TransferType(IntEnum):
-    """Type of transfer operation."""
-
-    UPLOAD = auto()
-    DOWNLOAD = auto()
-    DELETE = auto()
-
-
 class ConflictType(IntEnum):
     """Type of conflict detected.
 
@@ -305,72 +298,12 @@ class ConflictType(IntEnum):
     CONCURRENT_EVENT = auto()  # Remote event arrived during upload
 
 
-class TransferStatus(IntEnum):
-    """Status of a transfer operation."""
-
-    PENDING = auto()
-    IN_PROGRESS = auto()
-    COMPLETED = auto()
-    CANCELLED = auto()
-    FAILED = auto()
-
-
 class CoordinatorState(IntEnum):
     """State of the coordinator."""
 
     STOPPED = auto()
     RUNNING = auto()
     STOPPING = auto()
-
-
-@dataclass
-class TransferState:
-    """Tracks the state of an in-progress transfer.
-
-    Attributes:
-        path: Relative file path
-        transfer_type: Type of operation (upload/download/delete)
-        status: Current status
-        event: The event that triggered this transfer
-        started_at: When the transfer started
-        cancel_requested: Flag to request cancellation
-        error: Error message if failed
-        base_version: Server version this transfer is based on (for uploads)
-        detected_server_version: Latest server version detected during transfer
-        conflict_type: Type of conflict if one was detected
-    """
-
-    path: str
-    transfer_type: TransferType
-    status: TransferStatus
-    event: SyncEvent
-    started_at: float = field(default_factory=time.time)
-    cancel_requested: bool = False
-    error: str | None = None
-    # In-flight version tracking (Phase 15.7)
-    base_version: int | None = None  # Version we're uploading against
-    detected_server_version: int | None = None  # Latest server version we detected
-    conflict_type: ConflictType | None = None  # Type of conflict if detected
-
-    def request_cancel(self) -> None:
-        """Request cancellation of this transfer."""
-        self.cancel_requested = True
-
-    def set_conflict(
-        self,
-        conflict_type: ConflictType,
-        detected_version: int | None = None,
-    ) -> None:
-        """Mark this transfer as having a conflict.
-
-        Args:
-            conflict_type: When/how the conflict was detected
-            detected_version: The server version that caused the conflict
-        """
-        self.conflict_type = conflict_type
-        if detected_version is not None:
-            self.detected_server_version = detected_version
-        self.request_cancel()  # Auto-cancel on conflict
 
 
 @dataclass

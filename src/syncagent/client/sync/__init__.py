@@ -26,6 +26,11 @@ from syncagent.client.sync.change_scanner import (
     emit_events,
 )
 from syncagent.client.sync.coordinator import SyncCoordinator
+from syncagent.client.sync.domain.transfers import (
+    Transfer,
+    TransferStatus,
+    TransferType,
+)
 from syncagent.client.sync.ignore import IgnorePatterns
 from syncagent.client.sync.queue import EventQueue
 from syncagent.client.sync.retry import (
@@ -53,9 +58,6 @@ from syncagent.client.sync.types import (
     SyncEventType,
     SyncProgress,
     SyncResult,
-    TransferState,
-    TransferStatus,
-    TransferType,
     UploadError,
     UploadResult,
 )
@@ -135,7 +137,7 @@ __all__ = [
     "SyncCoordinator",
     "CoordinatorState",
     "CoordinatorStats",
-    "TransferState",
+    "Transfer",
     "TransferStatus",
     "TransferType",
     # Workers

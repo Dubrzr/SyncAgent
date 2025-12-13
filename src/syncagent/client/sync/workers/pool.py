@@ -17,8 +17,9 @@ from enum import Enum, auto
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from syncagent.client.sync.domain.transfers import TransferType
 from syncagent.client.sync.retry import NETWORK_EXCEPTIONS, wait_for_network
-from syncagent.client.sync.types import SyncEvent, TransferType
+from syncagent.client.sync.types import SyncEvent
 from syncagent.client.sync.workers.base import BaseWorker, WorkerResult
 from syncagent.client.sync.workers.delete_worker import DeleteWorker
 from syncagent.client.sync.workers.download_worker import DownloadWorker

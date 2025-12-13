@@ -27,16 +27,18 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Protocol
 
+from syncagent.client.sync.domain.decisions import DecisionAction, DecisionMatrix
+from syncagent.client.sync.domain.transfers import (
+    Transfer,
+    TransferStatus,
+    TransferType,
+)
 from syncagent.client.sync.types import (
     ConflictType,
     CoordinatorState,
     CoordinatorStats,
     SyncEvent,
-    SyncEventSource,
     SyncEventType,
-    TransferState,
-    TransferStatus,
-    TransferType,
 )
 
 if TYPE_CHECKING:
@@ -114,8 +116,8 @@ class SyncCoordinator:
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
 
-        # Transfer tracking: path -> TransferState
-        self._transfers: dict[str, TransferState] = {}
+        # Transfer tracking: path -> Transfer
+        self._transfers: dict[str, Transfer] = {}
 
         # Workers: TransferType -> worker
         self._workers: dict[TransferType, WorkerProtocol] = {}
@@ -127,8 +129,11 @@ class SyncCoordinator:
         self._stats = CoordinatorStats()
 
         # Callbacks
-        self._on_transfer_complete: Callable[[TransferState], None] | None = None
+        self._on_transfer_complete: Callable[[Transfer], None] | None = None
         self._on_conflict: Callable[[str, SyncEvent, SyncEvent], None] | None = None
+
+        # Decision matrix for concurrent events
+        self._decision_matrix = DecisionMatrix()
 
     @property
     def state(self) -> CoordinatorState:
@@ -156,7 +161,7 @@ class SyncCoordinator:
 
     def set_on_transfer_complete(
         self,
-        callback: Callable[[TransferState], None],
+        callback: Callable[[Transfer], None],
     ) -> None:
         """Set callback for transfer completion."""
         self._on_transfer_complete = callback
@@ -217,19 +222,19 @@ class SyncCoordinator:
             self._thread = None
             logger.info("Coordinator stopped")
 
-    def get_transfer(self, path: str) -> TransferState | None:
+    def get_transfer(self, path: str) -> Transfer | None:
         """Get the current transfer state for a path.
 
         Args:
             path: The file path
 
         Returns:
-            TransferState if there's an active transfer, None otherwise
+            Transfer if there's an active transfer, None otherwise
         """
         with self._lock:
             return self._transfers.get(path)
 
-    def get_active_transfers(self) -> list[TransferState]:
+    def get_active_transfers(self) -> list[Transfer]:
         """Get all active (in-progress) transfers."""
         with self._lock:
             return [
@@ -297,77 +302,57 @@ class SyncCoordinator:
     def _handle_concurrent(
         self,
         new_event: SyncEvent,
-        existing: TransferState,
+        existing: Transfer,
     ) -> None:
-        """Handle concurrent events on the same path.
+        """Handle concurrent events on the same path using DecisionMatrix.
 
         Args:
             new_event: The new incoming event
             existing: The existing in-progress transfer
         """
+        # Use decision matrix for declarative rule evaluation
+        action, reason = self._decision_matrix.evaluate(
+            new_event_source=new_event.source.name,
+            new_event_type=new_event.event_type.name,
+            existing_transfer_type=existing.transfer_type.name,
+        )
+
         logger.info(
-            "Concurrent event on %s: new=%s, existing=%s",
+            "Concurrent event on %s: new=%s, existing=%s -> %s (%s)",
             new_event.path,
             new_event.event_type.name,
             existing.transfer_type.name,
+            action.name,
+            reason,
         )
 
-        # Decision matrix implementation
-        if new_event.source == SyncEventSource.LOCAL:
-            # Local event while transfer in progress
-            if existing.transfer_type == TransferType.DOWNLOAD:
-                # LOCAL_* while DOWNLOAD -> Cancel download, process local event
-                logger.info(
-                    "Cancelling download of %s due to local %s",
-                    new_event.path,
-                    new_event.event_type.name,
-                )
-                existing.request_cancel()
-                self._stats.transfers_cancelled += 1
+        if action == DecisionAction.CANCEL_AND_REQUEUE:
+            # Cancel current transfer and requeue the new event
+            existing.request_cancel()
+            self._stats.transfers_cancelled += 1
+            self._queue.put(new_event)
 
-                # Re-queue the new event (will be processed after cancel completes)
-                self._queue.put(new_event)
+        elif action == DecisionAction.MARK_CONFLICT:
+            # Mark potential conflict on the existing transfer
+            server_version = new_event.metadata.get("version")
+            if server_version is not None:
+                server_version = int(server_version)
 
-            elif existing.transfer_type == TransferType.UPLOAD:
-                # LOCAL_* while UPLOAD -> Just update metadata, upload continues
-                logger.debug(
-                    "Local event on %s while upload in progress, ignoring",
-                    new_event.path,
-                )
+            existing.set_conflict(
+                ConflictType.CONCURRENT_EVENT,
+                server_version,
+            )
+            self._stats.conflicts_detected += 1
 
-        elif new_event.source == SyncEventSource.REMOTE:
-            # Remote event while transfer in progress
-            if existing.transfer_type == TransferType.UPLOAD:
-                # REMOTE_MODIFIED while UPLOAD -> Potential conflict
-                # Phase 15.7: Use ConflictType for concurrent event conflicts
-                server_version = new_event.metadata.get("version")
-                if server_version is not None:
-                    server_version = int(server_version)
+            if self._on_conflict and existing.event:
+                self._on_conflict(new_event.path, existing.event, new_event)
 
-                logger.warning(
-                    "Concurrent conflict on %s: upload in progress (base v%s), "
-                    "remote modified to v%s",
-                    new_event.path,
-                    existing.base_version,
-                    server_version,
-                )
+        elif action == DecisionAction.CREATE_CONFLICT_COPY:
+            # Server deleted while we're uploading - mark conflict and continue
+            existing.set_conflict(ConflictType.CONCURRENT_EVENT, None)
+            self._stats.conflicts_detected += 1
 
-                # Mark the transfer with conflict info
-                existing.set_conflict(
-                    ConflictType.CONCURRENT_EVENT,
-                    server_version,
-                )
-                self._stats.conflicts_detected += 1
-
-                if self._on_conflict:
-                    self._on_conflict(new_event.path, existing.event, new_event)
-
-            elif existing.transfer_type == TransferType.DOWNLOAD:
-                # REMOTE_* while DOWNLOAD -> Just continue, newer version
-                logger.debug(
-                    "Remote event on %s while download in progress, continuing",
-                    new_event.path,
-                )
+        # DecisionAction.IGNORE - do nothing, just log (already done above)
 
     def _dispatch(self, event: SyncEvent) -> None:
         """Dispatch an event to the appropriate worker.
@@ -395,12 +380,12 @@ class SyncCoordinator:
                 base_version = int(parent_version)
 
         # Create transfer state
-        transfer = TransferState(
+        transfer = Transfer(
             path=event.path,
             transfer_type=transfer_type,
             status=TransferStatus.IN_PROGRESS,
             event=event,
-            base_version=base_version,  # Phase 15.7
+            base_version=base_version,
         )
         self._transfers[event.path] = transfer
 

@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING
 from syncagent.client.sync.coordinator import (
     CoordinatorState,
     SyncCoordinator,
-    TransferState,
+)
+from syncagent.client.sync.domain.transfers import (
+    Transfer,
     TransferStatus,
     TransferType,
 )
@@ -67,15 +69,15 @@ class MockWorker:
         return self.success
 
 
-class TestTransferState:
-    """Tests for TransferState."""
+class TestTransfer:
+    """Tests for Transfer."""
 
     def test_create_transfer_state(self) -> None:
         """Should create transfer state with defaults."""
         event = SyncEvent.create(
             SyncEventType.LOCAL_MODIFIED, "test.txt", SyncEventSource.LOCAL
         )
-        state = TransferState(
+        state = Transfer(
             path="test.txt",
             transfer_type=TransferType.UPLOAD,
             status=TransferStatus.IN_PROGRESS,
@@ -93,7 +95,7 @@ class TestTransferState:
         event = SyncEvent.create(
             SyncEventType.LOCAL_MODIFIED, "test.txt", SyncEventSource.LOCAL
         )
-        state = TransferState(
+        state = Transfer(
             path="test.txt",
             transfer_type=TransferType.UPLOAD,
             status=TransferStatus.IN_PROGRESS,
@@ -109,7 +111,7 @@ class TestTransferState:
         event = SyncEvent.create(
             SyncEventType.LOCAL_MODIFIED, "test.txt", SyncEventSource.LOCAL
         )
-        state = TransferState(
+        state = Transfer(
             path="test.txt",
             transfer_type=TransferType.UPLOAD,
             status=TransferStatus.IN_PROGRESS,
@@ -126,7 +128,7 @@ class TestTransferState:
         event = SyncEvent.create(
             SyncEventType.LOCAL_MODIFIED, "test.txt", SyncEventSource.LOCAL
         )
-        state = TransferState(
+        state = Transfer(
             path="test.txt",
             transfer_type=TransferType.UPLOAD,
             status=TransferStatus.IN_PROGRESS,
@@ -146,7 +148,7 @@ class TestTransferState:
         event = SyncEvent.create(
             SyncEventType.LOCAL_MODIFIED, "test.txt", SyncEventSource.LOCAL
         )
-        state = TransferState(
+        state = Transfer(
             path="test.txt",
             transfer_type=TransferType.UPLOAD,
             status=TransferStatus.IN_PROGRESS,
@@ -359,7 +361,7 @@ class TestSyncCoordinator:
         event = SyncEvent.create(
             SyncEventType.LOCAL_MODIFIED, "test.txt", SyncEventSource.LOCAL
         )
-        transfer = TransferState(
+        transfer = Transfer(
             path="test.txt",
             transfer_type=TransferType.UPLOAD,
             status=TransferStatus.IN_PROGRESS,
@@ -387,7 +389,7 @@ class TestSyncCoordinator:
         worker = MockWorker()
         coordinator.register_worker(TransferType.UPLOAD, worker)
 
-        completed: list[TransferState] = []
+        completed: list[Transfer] = []
         coordinator.set_on_transfer_complete(lambda t: completed.append(t))
 
         coordinator.start()
@@ -451,7 +453,7 @@ class TestDecisionMatrix:
         download_event = SyncEvent.create(
             SyncEventType.REMOTE_MODIFIED, "test.txt", SyncEventSource.REMOTE
         )
-        existing_transfer = TransferState(
+        existing_transfer = Transfer(
             path="test.txt",
             transfer_type=TransferType.DOWNLOAD,
             status=TransferStatus.IN_PROGRESS,
@@ -488,7 +490,7 @@ class TestDecisionMatrix:
         upload_event = SyncEvent.create(
             SyncEventType.LOCAL_MODIFIED, "test.txt", SyncEventSource.LOCAL
         )
-        existing_transfer = TransferState(
+        existing_transfer = Transfer(
             path="test.txt",
             transfer_type=TransferType.UPLOAD,
             status=TransferStatus.IN_PROGRESS,
@@ -526,7 +528,7 @@ class TestDecisionMatrix:
         download_event = SyncEvent.create(
             SyncEventType.REMOTE_MODIFIED, "test.txt", SyncEventSource.REMOTE
         )
-        existing_transfer = TransferState(
+        existing_transfer = Transfer(
             path="test.txt",
             transfer_type=TransferType.DOWNLOAD,
             status=TransferStatus.IN_PROGRESS,
@@ -555,7 +557,7 @@ class TestDecisionMatrix:
         upload_event = SyncEvent.create(
             SyncEventType.LOCAL_MODIFIED, "test.txt", SyncEventSource.LOCAL
         )
-        existing_transfer = TransferState(
+        existing_transfer = Transfer(
             path="test.txt",
             transfer_type=TransferType.UPLOAD,
             status=TransferStatus.IN_PROGRESS,
@@ -585,7 +587,7 @@ class TestDecisionMatrix:
         download_event = SyncEvent.create(
             SyncEventType.REMOTE_MODIFIED, "test.txt", SyncEventSource.REMOTE
         )
-        existing_transfer = TransferState(
+        existing_transfer = Transfer(
             path="test.txt",
             transfer_type=TransferType.DOWNLOAD,
             status=TransferStatus.IN_PROGRESS,

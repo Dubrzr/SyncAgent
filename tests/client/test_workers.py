@@ -6,13 +6,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from syncagent.client.sync.domain.transfers import TransferType
 from syncagent.client.sync.types import (
     ConflictType,
     EarlyConflictError,
     SyncEvent,
     SyncEventSource,
     SyncEventType,
-    TransferType,
 )
 from syncagent.client.sync.workers import (
     BaseWorker,

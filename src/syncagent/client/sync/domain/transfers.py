@@ -10,16 +10,17 @@ All state transitions are validated.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from enum import Enum, auto
-from typing import TYPE_CHECKING
+from enum import IntEnum, auto
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    pass
+    from syncagent.client.sync.types import SyncEvent
 
 
-class TransferType(Enum):
+class TransferType(IntEnum):
     """Type of transfer operation."""
 
     UPLOAD = auto()
@@ -27,7 +28,7 @@ class TransferType(Enum):
     DELETE = auto()
 
 
-class TransferStatus(Enum):
+class TransferStatus(IntEnum):
     """Status of a transfer."""
 
     PENDING = auto()
@@ -59,11 +60,33 @@ class InvalidTransitionError(Exception):
 
 @dataclass
 class Transfer:
-    """A tracked transfer operation."""
+    """A tracked transfer operation.
+
+    Attributes:
+        path: Relative file path
+        transfer_type: Type of operation (upload/download/delete)
+        status: Current status
+        event: The event that triggered this transfer
+        started_at: When the transfer started
+        cancel_requested: Flag to request cancellation (checked by workers)
+        error: Error message if failed
+        base_version: Server version this transfer is based on (for uploads)
+        detected_server_version: Latest server version detected during transfer
+        has_conflict: Whether a conflict was detected
+        conflict_type: Type of conflict if detected
+    """
 
     path: str
     transfer_type: TransferType
     status: TransferStatus = TransferStatus.PENDING
+
+    # Event that triggered this transfer
+    event: SyncEvent | None = None
+    started_at: float = field(default_factory=time.time)
+
+    # Cancellation flag (workers check this)
+    cancel_requested: bool = False
+    error: str | None = None
 
     # Version tracking (for conflict detection)
     base_version: int | None = None
@@ -71,7 +94,7 @@ class Transfer:
 
     # Conflict info
     has_conflict: bool = False
-    conflict_type: str | None = None
+    conflict_type: Any = None  # Can be ConflictType enum or string
 
     # Callbacks
     _on_complete: Callable[[Transfer], None] | None = field(default=None, repr=False)
@@ -108,11 +131,34 @@ class Transfer:
         if self._on_error:
             self._on_error(self, error)
 
-    def mark_conflict(self, conflict_type: str, server_version: int) -> None:
-        """Flag potential conflict."""
+    def request_cancel(self) -> None:
+        """Request cancellation of this transfer.
+
+        Sets the cancel_requested flag for workers to check.
+        Does not change status - that happens when worker acknowledges.
+        """
+        self.cancel_requested = True
+
+    def set_conflict(
+        self,
+        conflict_type: Any,  # Can be ConflictType enum or string
+        detected_version: int | None = None,
+    ) -> None:
+        """Mark this transfer as having a conflict.
+
+        Args:
+            conflict_type: When/how the conflict was detected
+            detected_version: The server version that caused the conflict
+        """
         self.has_conflict = True
-        self.conflict_type = conflict_type
-        self.detected_server_version = server_version
+        self.conflict_type = conflict_type  # Keep original type (enum or string)
+        if detected_version is not None:
+            self.detected_server_version = detected_version
+        self.request_cancel()  # Auto-cancel on conflict
+
+    def mark_conflict(self, conflict_type: Any, server_version: int | None) -> None:
+        """Flag potential conflict (alias for set_conflict)."""
+        self.set_conflict(conflict_type, server_version)
 
     @property
     def is_terminal(self) -> bool:
