@@ -8,6 +8,7 @@ Commands:
 
 from __future__ import annotations
 
+import logging
 import sys
 import threading
 from collections.abc import Callable
@@ -22,6 +23,36 @@ from syncagent.client.cli.config import (
     load_config,
 )
 from syncagent.client.keystore import KeyStoreError, load_keystore
+
+
+class StatusLineAwareHandler(logging.Handler):
+    """Logging handler that coordinates with the status line display.
+
+    Clears the status line before printing log messages and restores it after.
+    """
+
+    def __init__(
+        self,
+        clear_func: Callable[[], None],
+        update_func: Callable[[], None],
+        lock: threading.Lock,
+    ) -> None:
+        super().__init__()
+        self._clear_func = clear_func
+        self._update_func = update_func
+        self._lock = lock
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            with self._lock:
+                self._clear_func()
+                # Use stdout (same as status line) to prevent interleaving
+                sys.stdout.write(msg + "\n")
+                sys.stdout.flush()
+                self._update_func()
+        except Exception:
+            self.handleError(record)
 
 
 @click.command()
@@ -150,6 +181,26 @@ def sync(watch: bool, no_progress: bool) -> None:
             sys.stdout.write(f"\r{status}{clear_part}")
             sys.stdout.flush()
             last_status_len = len(status)
+
+    # Install status-line-aware logging handler to prevent log interleaving
+    if not no_progress:
+        status_handler = StatusLineAwareHandler(
+            clear_func=clear_status_line,
+            update_func=update_status_line,
+            lock=progress_lock,
+        )
+        status_handler.setFormatter(logging.Formatter("%(message)s"))
+        status_handler.setLevel(logging.WARNING)  # Only show warnings and errors
+
+        # Replace handlers on syncagent logger to prevent interleaving
+        syncagent_logger = logging.getLogger("syncagent")
+        # Remove any existing handlers
+        for handler in syncagent_logger.handlers[:]:
+            syncagent_logger.removeHandler(handler)
+        syncagent_logger.addHandler(status_handler)
+        syncagent_logger.setLevel(logging.WARNING)
+        # Prevent propagation to root logger
+        syncagent_logger.propagate = False
 
     def make_on_complete(
         path: str, transfer_type: TransferType
