@@ -673,10 +673,10 @@ def sync(watch: bool, no_progress: bool) -> None:
                     download_speed=pool.download_speed,
                 ))
 
-            # Wait for all tasks to complete
+            # Wait for all tasks to complete, updating status every 500ms
             import time
-            while pool.active_count > 0:
-                time.sleep(0.1)
+            while pool.active_count > 0 or pool.queue_size > 0:
+                time.sleep(0.5)
                 # Keep reporting during wait with speeds
                 status_reporter.update_status(StatusUpdate(
                     state=SyncStateEnum.SYNCING,

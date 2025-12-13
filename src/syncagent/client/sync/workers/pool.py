@@ -195,15 +195,21 @@ class WorkerPool:
             while samples and samples[0][0] < cutoff:
                 samples.pop(0)
 
-            if len(samples) < 2:
+            if not samples:
                 return 0
 
             # Calculate bytes transferred in window
             total_bytes = sum(b for _, b in samples)
-            elapsed = samples[-1][0] - samples[0][0]
 
-            if elapsed <= 0:
-                return 0
+            # Use time since first sample, or time since single sample was recorded
+            elapsed = (
+                samples[-1][0] - samples[0][0]
+                if len(samples) >= 2
+                else now - samples[0][0]
+            )
+
+            # Ensure minimum elapsed time to avoid division issues
+            elapsed = max(elapsed, 0.1)
 
             return int(total_bytes / elapsed)
 
