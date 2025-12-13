@@ -20,6 +20,7 @@ from syncagent.client.sync.workers.base import (
 
 if TYPE_CHECKING:
     from syncagent.client.api import HTTPClient
+    from syncagent.client.state import LocalSyncState
 
 logger = logging.getLogger(__name__)
 
@@ -55,16 +56,19 @@ class DeleteWorker(BaseWorker):
         self,
         client: HTTPClient,
         base_path: Path,
+        sync_state: LocalSyncState | None = None,
     ) -> None:
         """Initialize the delete worker.
 
         Args:
             client: HTTP client for server communication.
             base_path: Base directory for resolving relative paths.
+            sync_state: Local sync state for tracking (optional).
         """
         super().__init__()
         self._client = client
         self._base_path = base_path
+        self._state = sync_state
 
     @property
     def worker_type(self) -> str:
@@ -96,6 +100,9 @@ class DeleteWorker(BaseWorker):
                 self._client.delete_file(relative_path)
                 result.deleted_remote = True
                 logger.info(f"Deleted on server: {relative_path}")
+                # Remove from local state so it's no longer tracked
+                if self._state:
+                    self._state.mark_deleted(relative_path)
             except Exception as e:
                 logger.error(f"Failed to delete on server: {relative_path}: {e}")
                 raise
@@ -119,5 +126,9 @@ class DeleteWorker(BaseWorker):
                 # File already doesn't exist locally
                 logger.debug(f"Local file already deleted: {relative_path}")
                 result.deleted_local = True
+
+            # Remove from local state so it's no longer tracked
+            if self._state:
+                self._state.mark_deleted(relative_path)
 
         return result

@@ -483,6 +483,7 @@ class WorkerPool:
             return DeleteWorker(
                 client=self._client,
                 base_path=self._base_path,
+                sync_state=self._state,
             )
         else:
             raise ValueError(f"Unknown transfer type: {transfer_type}")
