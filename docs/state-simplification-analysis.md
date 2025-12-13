@@ -315,14 +315,25 @@ Pas strictement nécessaire car on peut :
 
 | Fichier | Changements |
 |---------|-------------|
-| `src/syncagent/client/state.py` | Refonte complète |
-| `src/syncagent/client/sync/change_scanner.py` | Adapter scan logic |
-| `src/syncagent/client/sync/transfers/upload.py` | Supprimer tracking local |
-| `src/syncagent/client/sync/transfers/download.py` | Simplifier |
-| `src/syncagent/client/sync/workers/*.py` | Adapter workers |
-| `src/syncagent/client/sync/conflict.py` | Simplifier |
+| `src/syncagent/client/state.py` | Refonte complète → implémenter `VersionStore` Protocol |
+| `src/syncagent/client/sync/change_scanner.py` | Adapter scan logic → utiliser `domain/versions.py` |
+| `src/syncagent/client/sync/workers/transfers/file_uploader.py` | Supprimer tracking local |
+| `src/syncagent/client/sync/workers/transfers/file_downloader.py` | Simplifier |
+| `src/syncagent/client/sync/workers/*.py` | Adapter workers → utiliser `domain/conflicts.py` |
+| `src/syncagent/client/sync/workers/transfers/conflict.py` | Migrer vers `domain/conflicts.py` |
 | `tests/client/test_state.py` | Refonte tests |
 | `tests/client/test_sync.py` | Adapter tests |
+
+### Nouveaux Fichiers à Créer (domain/)
+
+| Fichier | Contenu |
+|---------|---------|
+| `src/syncagent/client/sync/domain/__init__.py` | Exports publics |
+| `src/syncagent/client/sync/domain/versions.py` | `VersionStore`, `VersionChecker`, `VersionUpdater` |
+| `src/syncagent/client/sync/domain/conflicts.py` | `ConflictDetector`, `ConflictResolver`, `ServerWinsResolver` |
+| `src/syncagent/client/sync/domain/transfers.py` | `Transfer`, `TransferTracker`, `TransferStatus` |
+| `src/syncagent/client/sync/domain/priorities.py` | `Priority`, `MtimeAwareComparator` |
+| `src/syncagent/client/sync/domain/decisions.py` | `DecisionMatrix`, `DecisionAction` |
 
 ## Estimation de l'Effort
 
@@ -723,6 +734,45 @@ if change.change_type != ChangeType.DELETED and change.path.exists():
 
 - Tests unitaires isolés pour chaque comportement
 - Pas de dépendances temporelles (sauf sleep explicite pour timestamps)
+
+---
+
+## Lien avec la Réorganisation du Code
+
+Voir [`code-organization-spec.md`](./code-organization-spec.md) pour la proposition de restructuration du code.
+
+### Impact sur la Simplification du State
+
+La création des modules `domain/` va faciliter la simplification du state :
+
+| Module Domain | Impact State |
+|--------------|--------------|
+| `domain/versions.py` | Centralise la gestion des versions → simplifie `synced_files` |
+| `domain/conflicts.py` | Découple détection/résolution → supprime besoin de `status` |
+| `domain/transfers.py` | État machine explicite → remplace `pending_uploads`, `upload_progress` |
+| `domain/priorities.py` | Queue autonome → pas d'impact direct sur state |
+
+### Ordre de Migration Recommandé
+
+```
+1. Créer domain/versions.py (VersionStore Protocol)
+      ↓
+2. Simplifier synced_files (supprimer status)
+      ↓
+3. Créer domain/transfers.py (TransferTracker)
+      ↓
+4. Supprimer pending_uploads, upload_progress
+      ↓
+5. Créer domain/conflicts.py (ConflictContext)
+      ↓
+6. Adapter workers à utiliser domain/
+```
+
+### Synergies
+
+- `VersionStore.get()` remplace `state.get_file()` pour la logique métier
+- `TransferTracker` remplace le tracking dans `pending_uploads` et `upload_progress`
+- `ConflictContext` unifie les infos éparpillées (mtime, size, hash, version)
 
 ---
 
