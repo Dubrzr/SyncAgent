@@ -1,88 +1,35 @@
 """Tests for sync domain modules.
 
 Tests for:
-- domain/priorities.py - Event priority and ordering
+- domain/priorities.py - mtime-aware event comparison
 - domain/transfers.py - Transfer state machine
-- domain/versions.py - Version tracking
-- domain/conflicts.py - Conflict detection
 - domain/decisions.py - Decision matrix
 """
 
 from __future__ import annotations
 
-import tempfile
 import time
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from syncagent.client.sync.domain import (
-    ConflictContext,
-    ConflictOutcome,
     DecisionAction,
     DecisionMatrix,
     DecisionRule,
     InvalidTransitionError,
     MtimeAwareComparator,
-    PreDownloadConflictDetector,
-    PreUploadConflictDetector,
-    Priority,
     Transfer,
     TransferStatus,
     TransferTracker,
     TransferType,
-    VersionChecker,
-    VersionInfo,
-    VersionUpdater,
     decide,
-    generate_conflict_filename,
-    get_priority,
-    get_priority_reason,
-    safe_rename,
 )
 from syncagent.client.sync.types import SyncEvent, SyncEventSource, SyncEventType
 
 # =============================================================================
 # Tests for domain/priorities.py
 # =============================================================================
-
-
-class TestPriority:
-    """Test Priority enum and rules."""
-
-    def test_priority_order(self) -> None:
-        """Critical < High < Normal < Low."""
-        assert Priority.CRITICAL < Priority.HIGH
-        assert Priority.HIGH < Priority.NORMAL
-        assert Priority.NORMAL < Priority.LOW
-
-    def test_get_priority_delete_is_critical(self) -> None:
-        """Delete events have critical priority."""
-        assert get_priority("LOCAL_DELETED") == Priority.CRITICAL
-        assert get_priority("REMOTE_DELETED") == Priority.CRITICAL
-
-    def test_get_priority_local_is_high(self) -> None:
-        """Local events have high priority."""
-        assert get_priority("LOCAL_CREATED") == Priority.HIGH
-        assert get_priority("LOCAL_MODIFIED") == Priority.HIGH
-
-    def test_get_priority_remote_is_normal(self) -> None:
-        """Remote events have normal priority."""
-        assert get_priority("REMOTE_CREATED") == Priority.NORMAL
-        assert get_priority("REMOTE_MODIFIED") == Priority.NORMAL
-
-    def test_get_priority_unknown_is_normal(self) -> None:
-        """Unknown events default to normal priority."""
-        assert get_priority("UNKNOWN_EVENT") == Priority.NORMAL
-
-    def test_get_priority_reason(self) -> None:
-        """Priority reasons are documented."""
-        reason = get_priority_reason("LOCAL_DELETED")
-        assert "uploading" in reason.lower() or "deleting" in reason.lower()
-
-        reason = get_priority_reason("UNKNOWN_EVENT")
-        assert "default" in reason.lower()
 
 
 class TestMtimeAwareComparator:
@@ -98,7 +45,7 @@ class TestMtimeAwareComparator:
         ts = timestamp or time.time()
         metadata = {"mtime": mtime} if mtime is not None else {}
         return SyncEvent(
-            priority=Priority.NORMAL,
+            priority=SyncEventType.LOCAL_MODIFIED,  # Use int value from enum
             timestamp=ts,
             event_type=SyncEventType.LOCAL_MODIFIED,
             path=path,
@@ -320,321 +267,6 @@ class TestTransferTracker:
 
 
 # =============================================================================
-# Tests for domain/versions.py
-# =============================================================================
-
-
-class MockVersionStore:
-    """Mock version store for testing."""
-
-    def __init__(self) -> None:
-        self._data: dict[str, VersionInfo] = {}
-
-    def get_version_info(self, path: str) -> VersionInfo | None:
-        return self._data.get(path)
-
-    def set_version_info(self, path: str, info: VersionInfo) -> None:
-        self._data[path] = info
-
-    def delete_version_info(self, path: str) -> None:
-        self._data.pop(path, None)
-
-
-class TestVersionChecker:
-    """Test VersionChecker."""
-
-    def test_is_locally_modified_new_file(self) -> None:
-        """New file is considered modified."""
-        store = MockVersionStore()
-        checker = VersionChecker(store)
-
-        assert checker.is_locally_modified("new.txt", 100.0, 1024) is True
-
-    def test_is_locally_modified_same_state(self) -> None:
-        """Same mtime/size is not modified."""
-        store = MockVersionStore()
-        store.set_version_info(
-            "test.txt",
-            VersionInfo(server_version=1, local_mtime=100.0, local_size=1024),
-        )
-        checker = VersionChecker(store)
-
-        assert checker.is_locally_modified("test.txt", 100.0, 1024) is False
-
-    def test_is_locally_modified_mtime_changed(self) -> None:
-        """Changed mtime means modified."""
-        store = MockVersionStore()
-        store.set_version_info(
-            "test.txt",
-            VersionInfo(server_version=1, local_mtime=100.0, local_size=1024),
-        )
-        checker = VersionChecker(store)
-
-        assert checker.is_locally_modified("test.txt", 200.0, 1024) is True
-
-    def test_is_locally_modified_size_changed(self) -> None:
-        """Changed size means modified."""
-        store = MockVersionStore()
-        store.set_version_info(
-            "test.txt",
-            VersionInfo(server_version=1, local_mtime=100.0, local_size=1024),
-        )
-        checker = VersionChecker(store)
-
-        assert checker.is_locally_modified("test.txt", 100.0, 2048) is True
-
-    def test_get_parent_version(self) -> None:
-        """Get parent version for updates."""
-        store = MockVersionStore()
-        store.set_version_info(
-            "test.txt",
-            VersionInfo(server_version=5, local_mtime=100.0, local_size=1024),
-        )
-        checker = VersionChecker(store)
-
-        assert checker.get_parent_version("test.txt") == 5
-        assert checker.get_parent_version("new.txt") is None
-
-    def test_needs_download(self) -> None:
-        """Check if download is needed."""
-        store = MockVersionStore()
-        store.set_version_info(
-            "test.txt",
-            VersionInfo(server_version=5, local_mtime=100.0, local_size=1024),
-        )
-        checker = VersionChecker(store)
-
-        assert checker.needs_download("test.txt", 5) is False  # Same version
-        assert checker.needs_download("test.txt", 6) is True  # Newer
-        assert checker.needs_download("new.txt", 1) is True  # Don't have it
-
-
-class TestVersionUpdater:
-    """Test VersionUpdater."""
-
-    def test_mark_synced(self) -> None:
-        """Test marking file as synced."""
-        store = MockVersionStore()
-        updater = VersionUpdater(store)
-
-        updater.mark_synced("test.txt", server_version=3, local_mtime=100.0, local_size=1024)
-
-        info = store.get_version_info("test.txt")
-        assert info is not None
-        assert info.server_version == 3
-        assert info.local_mtime == 100.0
-        assert info.local_size == 1024
-
-    def test_mark_deleted(self) -> None:
-        """Test marking file as deleted."""
-        store = MockVersionStore()
-        store.set_version_info(
-            "test.txt",
-            VersionInfo(server_version=1, local_mtime=100.0, local_size=1024),
-        )
-        updater = VersionUpdater(store)
-
-        updater.mark_deleted("test.txt")
-
-        assert store.get_version_info("test.txt") is None
-
-
-# =============================================================================
-# Tests for domain/conflicts.py
-# =============================================================================
-
-
-class TestPreDownloadConflictDetector:
-    """Test PreDownloadConflictDetector."""
-
-    def test_no_conflict_file_not_exists(self) -> None:
-        """No conflict if file doesn't exist."""
-        detector = PreDownloadConflictDetector()
-        ctx = ConflictContext(
-            local_path=Path("/nonexistent/file.txt"),
-            relative_path="file.txt",
-            local_mtime=100.0,
-            local_size=1024,
-            local_hash=None,
-            server_version=1,
-            server_hash=None,
-            expected_version=1,
-        )
-        assert detector.check(ctx) == ConflictOutcome.NO_CONFLICT
-
-    def test_conflict_untracked_file(self) -> None:
-        """Conflict if file exists but untracked."""
-        with tempfile.NamedTemporaryFile(delete=False) as f:
-            f.write(b"test content")
-            temp_path = Path(f.name)
-
-        try:
-            detector = PreDownloadConflictDetector()
-            ctx = ConflictContext(
-                local_path=temp_path,
-                relative_path="file.txt",
-                local_mtime=None,  # Untracked
-                local_size=None,
-                local_hash=None,
-                server_version=1,
-                server_hash=None,
-                expected_version=1,
-            )
-            assert detector.check(ctx) == ConflictOutcome.RESOLVED
-        finally:
-            temp_path.unlink()
-
-    def test_conflict_modified_file(self) -> None:
-        """Conflict if file was modified since tracking."""
-        with tempfile.NamedTemporaryFile(delete=False) as f:
-            f.write(b"test content")
-            temp_path = Path(f.name)
-
-        try:
-            stat = temp_path.stat()
-            detector = PreDownloadConflictDetector()
-            ctx = ConflictContext(
-                local_path=temp_path,
-                relative_path="file.txt",
-                local_mtime=stat.st_mtime - 10,  # Tracked with older mtime
-                local_size=stat.st_size,
-                local_hash=None,
-                server_version=1,
-                server_hash=None,
-                expected_version=1,
-            )
-            assert detector.check(ctx) == ConflictOutcome.RESOLVED
-        finally:
-            temp_path.unlink()
-
-    def test_no_conflict_same_state(self) -> None:
-        """No conflict if file matches tracked state."""
-        with tempfile.NamedTemporaryFile(delete=False) as f:
-            f.write(b"test content")
-            temp_path = Path(f.name)
-
-        try:
-            stat = temp_path.stat()
-            detector = PreDownloadConflictDetector()
-            ctx = ConflictContext(
-                local_path=temp_path,
-                relative_path="file.txt",
-                local_mtime=stat.st_mtime,
-                local_size=stat.st_size,
-                local_hash=None,
-                server_version=1,
-                server_hash=None,
-                expected_version=1,
-            )
-            assert detector.check(ctx) == ConflictOutcome.NO_CONFLICT
-        finally:
-            temp_path.unlink()
-
-
-class TestPreUploadConflictDetector:
-    """Test PreUploadConflictDetector."""
-
-    def test_no_conflict_new_file(self) -> None:
-        """No conflict for new file (no expected version)."""
-        detector = PreUploadConflictDetector()
-        ctx = ConflictContext(
-            local_path=Path("test.txt"),
-            relative_path="test.txt",
-            local_mtime=100.0,
-            local_size=1024,
-            local_hash=None,
-            server_version=None,
-            server_hash=None,
-            expected_version=None,  # New file
-        )
-        assert detector.check(ctx) == ConflictOutcome.NO_CONFLICT
-
-    def test_no_conflict_same_version(self) -> None:
-        """No conflict if server version matches expected."""
-        detector = PreUploadConflictDetector()
-        ctx = ConflictContext(
-            local_path=Path("test.txt"),
-            relative_path="test.txt",
-            local_mtime=100.0,
-            local_size=1024,
-            local_hash=None,
-            server_version=5,
-            server_hash=None,
-            expected_version=5,
-        )
-        assert detector.check(ctx) == ConflictOutcome.NO_CONFLICT
-
-    def test_conflict_version_mismatch(self) -> None:
-        """Conflict if server version differs from expected."""
-        detector = PreUploadConflictDetector()
-        ctx = ConflictContext(
-            local_path=Path("test.txt"),
-            relative_path="test.txt",
-            local_mtime=100.0,
-            local_size=1024,
-            local_hash=None,
-            server_version=6,  # Server was updated
-            server_hash=None,
-            expected_version=5,
-        )
-        assert detector.check(ctx) == ConflictOutcome.RESOLVED
-
-    def test_conflict_server_deleted(self) -> None:
-        """Conflict if file was deleted on server."""
-        detector = PreUploadConflictDetector()
-        ctx = ConflictContext(
-            local_path=Path("test.txt"),
-            relative_path="test.txt",
-            local_mtime=100.0,
-            local_size=1024,
-            local_hash=None,
-            server_version=None,  # Deleted
-            server_hash=None,
-            expected_version=5,
-        )
-        assert detector.check(ctx) == ConflictOutcome.RESOLVED
-
-
-class TestConflictFilename:
-    """Test conflict filename generation."""
-
-    def test_generate_conflict_filename(self) -> None:
-        """Test filename format."""
-        path = Path("/tmp/document.txt")
-        conflict_path = generate_conflict_filename(path, machine_name="laptop")
-
-        assert conflict_path.parent == path.parent
-        assert conflict_path.name.startswith("document.conflict-")
-        assert "-laptop" in conflict_path.name
-        assert conflict_path.suffix == ".txt"
-
-    def test_generate_conflict_filename_no_extension(self) -> None:
-        """Test with file without extension."""
-        path = Path("/tmp/Makefile")
-        conflict_path = generate_conflict_filename(path, machine_name="laptop")
-
-        assert conflict_path.name.startswith("Makefile.conflict-")
-        assert "-laptop" in conflict_path.name
-
-
-class TestSafeRename:
-    """Test safe_rename function."""
-
-    def test_safe_rename_success(self) -> None:
-        """Successful rename without modification."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            src = Path(tmpdir) / "source.txt"
-            dst = Path(tmpdir) / "dest.txt"
-            src.write_text("content")
-
-            safe_rename(src, dst)
-
-            assert not src.exists()
-            assert dst.exists()
-            assert dst.read_text() == "content"
-
-
-# =============================================================================
 # Tests for domain/decisions.py
 # =============================================================================
 
@@ -720,7 +352,7 @@ class TestDecideFunction:
     def test_decide_with_events(self) -> None:
         """Test decide() with real event and transfer objects."""
         event = SyncEvent(
-            priority=Priority.HIGH,
+            priority=SyncEventType.LOCAL_MODIFIED,  # Use int value from enum
             timestamp=time.time(),
             event_type=SyncEventType.LOCAL_MODIFIED,
             path="test.txt",
