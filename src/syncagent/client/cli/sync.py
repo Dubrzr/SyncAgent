@@ -117,15 +117,19 @@ def sync(watch: bool, no_progress: bool) -> None:
     state_db_path = config_dir / "state.db"
     local_state = LocalSyncState(state_db_path)
 
-    # Create status reporter for real-time dashboard updates
-    status_reporter = StatusReporter(server_config)
-    status_reporter.start()
+    # Create event queue for sync events
+    queue = EventQueue()
 
     # Create scanner to detect changes
     scanner = ChangeScanner(client, local_state, sync_folder)
 
-    # Create event queue for sync events
-    queue = EventQueue()
+    # Status reporter for dashboard updates AND receiving file change notifications
+    # In watch mode, pass the queue so push notifications emit events
+    status_reporter = StatusReporter(
+        server_config,
+        event_queue=queue if watch else None,
+    )
+    status_reporter.start()
 
     # Create worker pool for concurrent transfers
     pool = WorkerPool(
@@ -367,12 +371,14 @@ def sync(watch: bool, no_progress: bool) -> None:
 
     if watch:
         # Watch mode: keep watcher running, process events continuously
+        # StatusReporter handles both status reporting AND receiving push notifications
         click.echo("\nWatching for changes... (Ctrl+C to stop)\n")
         status_reporter.update_status(StatusUpdate(state=SyncStateEnum.IDLE))
 
         try:
             while True:
                 event = queue.get(timeout=1.0)
+
                 if event is not None:
                     click.echo(f"Detected change: {event.path}")
                     status_reporter.update_status(StatusUpdate(state=SyncStateEnum.SYNCING))

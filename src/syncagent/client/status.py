@@ -29,6 +29,8 @@ if TYPE_CHECKING:
 
     from websockets.asyncio.client import ClientConnection
 
+    from syncagent.client.sync.queue import EventQueue
+
 logger = logging.getLogger(__name__)
 
 
@@ -109,18 +111,21 @@ class StatusReporter:
         self,
         config: ServerConfig,
         ws_config: StatusReporterConfig | None = None,
+        event_queue: EventQueue | None = None,
     ) -> None:
         """Initialize the status reporter.
 
         Args:
             config: Server configuration with URL, token, and settings.
             ws_config: WebSocket-specific configuration (heartbeat, reconnection).
+            event_queue: Optional queue to emit file change events to.
         """
         self._server_config = config
         self._server_url = config.server_url
         self._token = config.token
         self._verify_ssl = config.verify_ssl
         self._ws_config = ws_config or StatusReporterConfig()
+        self._event_queue = event_queue
 
         # Connection state
         self._ws: ClientConnection | None = None
@@ -141,6 +146,7 @@ class StatusReporter:
         # Callbacks
         self._on_connected: Callable[[], None] | None = None
         self._on_disconnected: Callable[[], None] | None = None
+        self._on_file_change: Callable[[str, str], None] | None = None
 
     @property
     def connected(self) -> bool:
@@ -369,7 +375,7 @@ class StatusReporter:
     async def _handle_message(self, message: str) -> None:
         """Handle incoming message from server.
 
-        Currently just logs, but could be extended for server commands.
+        Handles file_change messages by emitting sync events to the queue.
 
         Args:
             message: Raw message string.
@@ -378,8 +384,59 @@ class StatusReporter:
             data = json.loads(message)
             msg_type = data.get("type")
             logger.debug(f"Received message: {msg_type}")
+
+            if msg_type == "file_change":
+                self._handle_file_change(data)
+
         except json.JSONDecodeError:
             logger.warning(f"Invalid message received: {message[:100]}")
+
+    def _handle_file_change(self, data: dict[str, Any]) -> None:
+        """Handle a file_change push notification.
+
+        Args:
+            data: Message data with action, path, and timestamp.
+        """
+        action = data.get("action")
+        path = data.get("path")
+
+        if not action or not path:
+            logger.warning("Invalid file_change message: %s", data)
+            return
+
+        logger.info("Received file change notification: %s %s", action, path)
+
+        # Emit to event queue if available
+        if self._event_queue:
+            from syncagent.client.sync.types import (
+                SyncEvent,
+                SyncEventSource,
+                SyncEventType,
+            )
+
+            # Map action to event type
+            action_to_event = {
+                "CREATED": SyncEventType.REMOTE_CREATED,
+                "UPDATED": SyncEventType.REMOTE_MODIFIED,
+                "DELETED": SyncEventType.REMOTE_DELETED,
+            }
+
+            event_type = action_to_event.get(action)
+            if not event_type:
+                logger.warning("Unknown file change action: %s", action)
+                return
+
+            event = SyncEvent.create(
+                event_type=event_type,
+                path=path,
+                source=SyncEventSource.REMOTE,
+            )
+            self._event_queue.put(event)
+            logger.debug("Emitted remote event: %s %s", action, path)
+
+        # Call callback if registered
+        if self._on_file_change:
+            self._on_file_change(action, path)
 
     async def _close_connection(self) -> None:
         """Close the WebSocket connection."""

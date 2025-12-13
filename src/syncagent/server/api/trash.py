@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from syncagent.server.api.deps import get_current_token, get_db
 from syncagent.server.database import Database
 from syncagent.server.models import Token
 from syncagent.server.schemas import FileResponse, file_to_response
+from syncagent.server.ws import get_hub
 
 router = APIRouter(prefix="/api/trash", tags=["trash"])
 
@@ -23,7 +26,7 @@ def list_trash(
 
 
 @router.post("/{path:path}/restore", response_model=FileResponse)
-def restore_from_trash(
+async def restore_from_trash(
     path: str,
     db: Database = Depends(get_db),
     _auth: Token = Depends(get_current_token),
@@ -36,4 +39,13 @@ def restore_from_trash(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"File not found: {path}",
         )
+
+    # Notify connected clients about the restored file
+    hub = get_hub()
+    await hub.notify_file_change(
+        action="CREATED",
+        file_path=path,
+        timestamp=datetime.now(UTC).isoformat(),
+    )
+
     return file_to_response(file)

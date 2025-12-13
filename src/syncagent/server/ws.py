@@ -407,6 +407,83 @@ class StatusHub:
         with contextlib.suppress(Exception):
             await websocket.send_text(message)
 
+    async def notify_file_change(
+        self,
+        action: str,
+        file_path: str,
+        timestamp: str,
+        exclude_machine_id: int | None = None,
+    ) -> None:
+        """Notify all connected clients about a file change.
+
+        This is used to push server-side changes (admin delete, restore, etc.)
+        to connected clients so they can sync immediately.
+
+        Args:
+            action: Change action (CREATED, UPDATED, DELETED).
+            file_path: Path of the changed file.
+            timestamp: ISO timestamp of the change.
+            exclude_machine_id: Optional machine ID to exclude from notification
+                               (e.g., the machine that made the change).
+        """
+        message = json.dumps({
+            "type": "file_change",
+            "action": action,
+            "path": file_path,
+            "timestamp": timestamp,
+        })
+
+        async with self._lock:
+            disconnected = []
+            for machine_id, ws in self._client_connections.items():
+                # Skip the machine that made the change
+                if exclude_machine_id and machine_id == exclude_machine_id:
+                    continue
+
+                try:
+                    if ws.client_state == WebSocketState.CONNECTED:
+                        await ws.send_text(message)
+                        logger.debug(
+                            "Sent file_change to machine %d: %s %s",
+                            machine_id, action, file_path,
+                        )
+                except Exception:
+                    disconnected.append(machine_id)
+
+            # Clean up disconnected clients
+            for machine_id in disconnected:
+                self._client_connections.pop(machine_id, None)
+                if machine_id in self._machine_status:
+                    self._machine_status[machine_id].state = SyncState.OFFLINE
+
+    def notify_file_change_sync(
+        self,
+        action: str,
+        file_path: str,
+        timestamp: str,
+        exclude_machine_id: int | None = None,
+    ) -> None:
+        """Synchronous wrapper for notify_file_change.
+
+        For use from non-async database code.
+
+        Args:
+            action: Change action (CREATED, UPDATED, DELETED).
+            file_path: Path of the changed file.
+            timestamp: ISO timestamp of the change.
+            exclude_machine_id: Optional machine ID to exclude.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No event loop running - can't notify
+            logger.debug("No event loop, skipping file change notification")
+            return
+
+        asyncio.create_task(
+            self.notify_file_change(action, file_path, timestamp, exclude_machine_id)
+        )
+
 
 # Global hub instance (created by app)
 _hub: StatusHub | None = None

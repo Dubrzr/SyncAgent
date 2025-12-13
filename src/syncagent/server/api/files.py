@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.exc import IntegrityError
 
@@ -14,6 +16,7 @@ from syncagent.server.schemas import (
     FileUpdateRequest,
     file_to_response,
 )
+from syncagent.server.ws import get_hub
 
 router = APIRouter(prefix="/api", tags=["files"])
 
@@ -123,11 +126,43 @@ def update_file(
 
 
 @router.delete("/files/{path:path}")
-def delete_file(
+async def delete_file(
     path: str,
     db: Database = Depends(get_db),
     auth: Token = Depends(get_current_token),
 ) -> Response:
-    """Soft-delete a file (move to trash)."""
+    """Soft-delete a file or folder (move to trash).
+
+    If path is an exact file, deletes that file.
+    If path is a folder prefix, deletes all files under that folder.
+    Notifies connected clients via WebSocket push.
+    """
+    # Get files that will be deleted (for notification)
+    # Check exact file first
+    file = db.get_file(path)
+    paths_to_notify: list[str] = []
+
+    if file:
+        paths_to_notify = [path]
+    else:
+        # Try as folder prefix
+        folder_path = path if path.endswith("/") else path + "/"
+        files = db.list_files(prefix=folder_path)
+        paths_to_notify = [f.path for f in files]
+
+    # Perform the deletion
     db.delete_file(path, auth.machine_id)
+
+    # Notify connected clients (exclude the machine that initiated the delete)
+    if paths_to_notify:
+        hub = get_hub()
+        timestamp = datetime.now(UTC).isoformat()
+        for file_path in paths_to_notify:
+            await hub.notify_file_change(
+                action="DELETED",
+                file_path=file_path,
+                timestamp=timestamp,
+                exclude_machine_id=auth.machine_id,
+            )
+
     return Response(status_code=status.HTTP_204_NO_CONTENT)

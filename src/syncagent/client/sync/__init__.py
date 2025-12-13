@@ -11,6 +11,7 @@ Components:
 - **Workers**: Execute transfers (UploadWorker, DownloadWorker, DeleteWorker)
 - **WorkerPool**: Concurrent worker management
 - **FileWatcher**: Watch directory for real-time changes
+- **RemoteChangeListener**: WebSocket listener for real-time remote changes
 
 Low-level transfer:
 - FileUploader / FileDownloader: Chunked transfer with encryption
@@ -33,6 +34,7 @@ from syncagent.client.sync.domain.transfers import (
 )
 from syncagent.client.sync.ignore import IgnorePatterns
 from syncagent.client.sync.queue import EventQueue
+from syncagent.client.sync.remote_listener import RemoteChangeListener
 from syncagent.client.sync.retry import (
     DEFAULT_BACKOFF_MULTIPLIER,
     DEFAULT_INITIAL_BACKOFF,
@@ -167,4 +169,6 @@ __all__ = [
     "FileChange",
     "FileWatcher",
     "IgnorePatterns",
+    # Remote change listener
+    "RemoteChangeListener",
 ]
