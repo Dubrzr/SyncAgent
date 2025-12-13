@@ -267,18 +267,32 @@ class StatusReporter:
 
     async def _connection_loop(self) -> None:
         """Main connection loop with automatic reconnection."""
+        was_connected = False
+
         while self._should_run:
             try:
                 await self._connect()
 
                 if self._connected:
+                    was_connected = True
                     self._reconnect_delay = self._ws_config.reconnect_min_delay
                     await self._run_connected()
 
             except WebSocketException as e:
-                logger.warning(f"WebSocket error: {e}")
-            except Exception:
-                logger.exception("Unexpected error in connection loop")
+                if was_connected:
+                    logger.warning("StatusReporter disconnected from server")
+                    was_connected = False
+                logger.debug(f"WebSocket error: {e}")
+            except (ConnectionRefusedError, OSError) as e:
+                # Network errors - log without traceback
+                if was_connected:
+                    logger.warning("StatusReporter disconnected from server")
+                    was_connected = False
+                logger.debug(f"Connection error: {e}")
+            except Exception as e:
+                # Unexpected errors - log with traceback for debugging
+                logger.warning(f"StatusReporter error: {e}")
+                logger.debug("Full traceback:", exc_info=True)
 
             if not self._should_run:
                 break
@@ -288,7 +302,7 @@ class StatusReporter:
             if self._on_disconnected:
                 self._on_disconnected()
 
-            logger.info(f"Reconnecting in {self._reconnect_delay:.1f}s...")
+            logger.info(f"StatusReporter retrying in {self._reconnect_delay:.0f}s...")
             await asyncio.sleep(self._reconnect_delay)
 
             # Increase delay for next attempt
@@ -299,29 +313,23 @@ class StatusReporter:
 
     async def _connect(self) -> None:
         """Establish WebSocket connection."""
-        try:
-            # Configure SSL if needed
-            ssl_context: ssl.SSLContext | None = None
-            if self.ws_url.startswith("wss://"):
-                ssl_context = ssl.create_default_context()
-                if not self._verify_ssl:
-                    ssl_context.check_hostname = False
-                    ssl_context.verify_mode = ssl.CERT_NONE
+        # Configure SSL if needed
+        ssl_context: ssl.SSLContext | None = None
+        if self.ws_url.startswith("wss://"):
+            ssl_context = ssl.create_default_context()
+            if not self._verify_ssl:
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
 
-            self._ws = await websockets.connect(self.ws_url, ssl=ssl_context)
-            self._connected = True
-            logger.info("StatusReporter connected to server")
+        self._ws = await websockets.connect(self.ws_url, ssl=ssl_context)
+        self._connected = True
+        logger.info("StatusReporter connected to server")
 
-            if self._on_connected:
-                self._on_connected()
+        if self._on_connected:
+            self._on_connected()
 
-            # Send current status immediately
-            await self._send_status()
-
-        except WebSocketException as e:
-            logger.warning(f"Failed to connect: {e}")
-            self._connected = False
-            raise
+        # Send current status immediately
+        await self._send_status()
 
     async def _run_connected(self) -> None:
         """Run while connected - send heartbeats and handle messages."""
