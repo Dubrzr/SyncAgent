@@ -9,6 +9,7 @@ Commands:
 from __future__ import annotations
 
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -110,18 +111,71 @@ def sync(watch: bool, no_progress: bool) -> None:
     conflicts: list[str] = []
     errors: list[str] = []
 
+    # Track currently in-progress transfers for real-time display
+    in_progress: dict[str, str] = {}  # path -> arrow symbol
+    last_status_len = 0  # Track length of last status line for clearing
+    progress_lock = threading.Lock()
+
+    def clear_status_line() -> None:
+        """Clear the current status line."""
+        nonlocal last_status_len
+        if last_status_len > 0 and not no_progress:
+            # Move to start of line and clear it
+            sys.stdout.write("\r" + " " * last_status_len + "\r")
+            sys.stdout.flush()
+            last_status_len = 0
+
+    def update_status_line() -> None:
+        """Update the real-time status line showing in-progress files."""
+        nonlocal last_status_len
+        if no_progress:
+            return
+
+        with progress_lock:
+            if not in_progress:
+                clear_status_line()
+                return
+
+            # Build status showing current files
+            files_str = ", ".join(f"{arrow} {path}" for path, arrow in in_progress.items())
+            status = f"  Syncing: {files_str}"
+
+            # Truncate if too long
+            term_width = 80
+            if len(status) > term_width - 3:
+                status = status[: term_width - 6] + "..."
+
+            # Clear previous and write new
+            clear_part = " " * max(0, last_status_len - len(status))
+            sys.stdout.write(f"\r{status}{clear_part}")
+            sys.stdout.flush()
+            last_status_len = len(status)
+
     def make_on_complete(
         path: str, transfer_type: TransferType
     ) -> Callable[[Any], None]:
         """Create a completion callback that tracks the transfer."""
         def _on_complete(result: Any) -> None:
-            if hasattr(result, "success") and result.success:
-                if transfer_type == TransferType.UPLOAD:
-                    uploaded.append(path)
-                elif transfer_type == TransferType.DOWNLOAD:
-                    downloaded.append(path)
-                elif transfer_type == TransferType.DELETE:
-                    deleted.append(path)
+            with progress_lock:
+                # Remove from in-progress
+                in_progress.pop(path, None)
+
+                if hasattr(result, "success") and result.success:
+                    # Clear status line, print completion on new line
+                    clear_status_line()
+
+                    if transfer_type == TransferType.UPLOAD:
+                        uploaded.append(path)
+                        if not no_progress:
+                            click.echo(f"  ↑ {path}")
+                    elif transfer_type == TransferType.DOWNLOAD:
+                        downloaded.append(path)
+                        if not no_progress:
+                            click.echo(f"  ↓ {path}")
+                    elif transfer_type == TransferType.DELETE:
+                        deleted.append(path)
+                        if not no_progress:
+                            click.echo(f"  ✗ {path}")
         return _on_complete
 
     def on_error(error_msg: str) -> None:
@@ -130,7 +184,7 @@ def sync(watch: bool, no_progress: bool) -> None:
 
     def process_event(event: SyncEvent) -> None:
         """Process a single sync event - submit to worker pool."""
-        # Determine transfer type and display indicator
+        # Determine transfer type and arrow
         if event.event_type in (
             SyncEventType.LOCAL_CREATED,
             SyncEventType.LOCAL_MODIFIED,
@@ -152,10 +206,11 @@ def sync(watch: bool, no_progress: bool) -> None:
         else:
             return
 
-        if not no_progress:
-            click.echo(f"  {arrow} {event.path}")
+        # Add to in-progress tracking
+        with progress_lock:
+            in_progress[event.path] = arrow
 
-        # Submit to worker pool
+        # Submit to worker pool (logging happens on completion)
         pool.submit(
             event=event,
             transfer_type=transfer_type,
@@ -194,6 +249,9 @@ def sync(watch: bool, no_progress: bool) -> None:
             if event is not None:
                 process_event(event)
 
+            # Update real-time status display
+            update_status_line()
+
             # Report progress to server (~100ms intervals via timeout)
             status_reporter.update_status(StatusUpdate(
                 state=SyncStateEnum.SYNCING,
@@ -206,6 +264,7 @@ def sync(watch: bool, no_progress: bool) -> None:
 
             # Check if done (queue empty AND pool idle)
             if event is None and pool.active_count == 0 and pool.queue_size == 0:
+                clear_status_line()  # Clear before exiting
                 break
 
     def display_summary() -> None:
