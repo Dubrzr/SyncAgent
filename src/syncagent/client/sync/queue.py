@@ -46,6 +46,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from syncagent.client.sync.domain.priorities import MtimeAwareComparator
 from syncagent.client.sync.types import (
     SyncEvent,
     SyncEventSource,
@@ -88,6 +89,7 @@ class EventQueue:
         self._persistence_path = persistence_path
         self._db: sqlite3.Connection | None = None
         self._closed = False
+        self._comparator = MtimeAwareComparator()
 
         if persistence_path:
             self._init_persistence()
@@ -213,41 +215,24 @@ class EventQueue:
                 )
                 return False
 
-            # Deduplication with mtime-awareness
+            # Deduplication with mtime-awareness (delegated to comparator)
             old_event = self._events.get(event.path)
             if old_event:
-                # mtime-aware deduplication for LOCAL events
-                old_mtime = old_event.metadata.get("mtime")
-                new_mtime = event.metadata.get("mtime")
+                if not self._comparator.should_replace(old_event, event):
+                    # Keep old event - new event is stale
+                    logger.debug(
+                        "Ignoring stale event for %s: keeping existing %s",
+                        event.path,
+                        old_event.event_type.name,
+                    )
+                    return True  # Event "accepted" but not stored
 
-                if old_mtime is not None and new_mtime is not None:
-                    # Both have mtime - compare file modification times
-                    if new_mtime < old_mtime:
-                        # New event has older mtime - keep old event
-                        logger.debug(
-                            "Ignoring event with older mtime for %s: new_mtime=%.3f < old_mtime=%.3f",
-                            event.path,
-                            new_mtime,
-                            old_mtime,
-                        )
-                        return True  # Event "accepted" but not stored
-
-                    if new_mtime == old_mtime and event.timestamp <= old_event.timestamp:
-                        # Same mtime - keep the more recent event timestamp
-                        logger.debug(
-                            "Ignoring event with same mtime but older timestamp for %s",
-                            event.path,
-                        )
-                        return True
-
-                # Different mtime (new > old) or missing mtime - replace
+                # New event wins - replace
                 logger.debug(
-                    "Replacing event for %s: %s -> %s (mtime: %s -> %s)",
+                    "Replacing event for %s: %s -> %s",
                     event.path,
                     old_event.event_type.name,
                     event.event_type.name,
-                    old_mtime,
-                    new_mtime,
                 )
 
             self._events[event.path] = event
