@@ -7,6 +7,7 @@ Commands:
 from __future__ import annotations
 
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -98,16 +99,27 @@ def sync(watch: bool, no_progress: bool) -> None:
         state=local_state,
     )
 
-    # Track results
+    # Track results (completed transfers, not pending)
     uploaded: list[str] = []
     downloaded: list[str] = []
     deleted: list[str] = []
     conflicts: list[str] = []
     errors: list[str] = []
 
-    def on_complete(result: Any) -> None:
-        """Track completed transfers."""
-        pass  # Stats tracked in result lists
+    def make_on_complete(
+        path: str, transfer_type: TransferType
+    ) -> Callable[[Any], None]:
+        """Create a completion callback that tracks the transfer."""
+        def _on_complete(result: Any) -> None:
+            # Only track successful completions
+            if hasattr(result, "success") and result.success:
+                if transfer_type == TransferType.UPLOAD:
+                    uploaded.append(path)
+                elif transfer_type == TransferType.DOWNLOAD:
+                    downloaded.append(path)
+                elif transfer_type == TransferType.DELETE:
+                    deleted.append(path)
+        return _on_complete
 
     def on_error(error_msg: str) -> None:
         """Track errors."""
@@ -170,27 +182,24 @@ def sync(watch: bool, no_progress: bool) -> None:
                     break
                 continue
 
-            # Determine transfer type
+            # Determine transfer type and display indicator
             if event.event_type in (
                 SyncEventType.LOCAL_CREATED,
                 SyncEventType.LOCAL_MODIFIED,
             ):
                 transfer_type = TransferType.UPLOAD
-                uploaded.append(event.path)
                 arrow = "↑"
             elif event.event_type in (
                 SyncEventType.REMOTE_CREATED,
                 SyncEventType.REMOTE_MODIFIED,
             ):
                 transfer_type = TransferType.DOWNLOAD
-                downloaded.append(event.path)
                 arrow = "↓"
             elif event.event_type in (
                 SyncEventType.LOCAL_DELETED,
                 SyncEventType.REMOTE_DELETED,
             ):
                 transfer_type = TransferType.DELETE
-                deleted.append(event.path)
                 arrow = "✗"
             else:
                 continue
@@ -198,11 +207,11 @@ def sync(watch: bool, no_progress: bool) -> None:
             if not no_progress:
                 click.echo(f"  {arrow} {event.path}")
 
-            # Submit to worker pool
+            # Submit to worker pool - completion tracked in callback
             pool.submit(
                 event=event,
                 transfer_type=transfer_type,
-                on_complete=on_complete,
+                on_complete=make_on_complete(event.path, transfer_type),
                 on_error=on_error,
             )
 
