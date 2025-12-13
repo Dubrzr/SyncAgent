@@ -452,12 +452,18 @@ class Database:
                 session.expunge(file)
             return files
 
-    def delete_file(self, path: str, machine_id: int | None) -> None:
-        """Soft-delete a file (move to trash).
+    def delete_file(self, path: str, machine_id: int | None) -> int:
+        """Soft-delete a file or folder (move to trash).
+
+        If the exact path matches a file, deletes that file.
+        If not found, treats the path as a folder and deletes all files inside.
 
         Args:
-            path: File path.
+            path: File or folder path.
             machine_id: ID of machine deleting (None uses 'server' machine).
+
+        Returns:
+            Number of files deleted.
         """
         # Use server machine for admin deletions
         actual_machine_id = machine_id
@@ -466,17 +472,21 @@ class Database:
             actual_machine_id = server_machine.id
 
         with self._session() as session:
-            stmt = select(FileMetadata).where(FileMetadata.path == path)
+            # Try exact file match first
+            stmt = select(FileMetadata).where(
+                FileMetadata.path == path,
+                FileMetadata.deleted_at.is_(None),
+            )
             file = session.execute(stmt).scalar_one_or_none()
+
             if file:
+                # Single file deletion
                 file.deleted_at = datetime.now(UTC)
                 file.version += 1
 
-                # Update updated_by if original machine_id was provided
                 if machine_id is not None:
                     file.updated_by = machine_id
 
-                # Always log change (uses server machine for admin deletions)
                 change = ChangeLog(
                     file_id=file.id,
                     file_path=path,
@@ -485,8 +495,93 @@ class Database:
                     machine_id=actual_machine_id,
                 )
                 session.add(change)
-
                 session.commit()
+                return 1
+
+            # No exact match - try as folder prefix
+            folder_path = path if path.endswith("/") else path + "/"
+            stmt = select(FileMetadata).where(
+                FileMetadata.path.startswith(folder_path),
+                FileMetadata.deleted_at.is_(None),
+            )
+            files = list(session.execute(stmt).scalars().all())
+
+            if not files:
+                return 0
+
+            now = datetime.now(UTC)
+            for f in files:
+                f.deleted_at = now
+                f.version += 1
+
+                if machine_id is not None:
+                    f.updated_by = machine_id
+
+                change = ChangeLog(
+                    file_id=f.id,
+                    file_path=f.path,
+                    action="DELETED",
+                    version=f.version,
+                    machine_id=actual_machine_id,
+                )
+                session.add(change)
+
+            session.commit()
+            return len(files)
+
+    def delete_folder(self, folder_path: str, machine_id: int | None) -> int:
+        """Soft-delete all files in a folder (recursive).
+
+        Args:
+            folder_path: Folder path (all files with this prefix will be deleted).
+            machine_id: ID of machine deleting (None uses 'server' machine).
+
+        Returns:
+            Number of files deleted.
+        """
+        # Use server machine for admin deletions
+        actual_machine_id = machine_id
+        if actual_machine_id is None:
+            server_machine = self.get_or_create_server_machine()
+            actual_machine_id = server_machine.id
+
+        # Ensure folder path ends with /
+        if not folder_path.endswith("/"):
+            folder_path = folder_path + "/"
+
+        deleted_count = 0
+        now = datetime.now(UTC)
+
+        with self._session() as session:
+            # Find all non-deleted files in the folder
+            stmt = select(FileMetadata).where(
+                FileMetadata.path.startswith(folder_path),
+                FileMetadata.deleted_at.is_(None),
+            )
+            files = list(session.execute(stmt).scalars().all())
+
+            for file in files:
+                file.deleted_at = now
+                file.version += 1
+
+                # Update updated_by if original machine_id was provided
+                if machine_id is not None:
+                    file.updated_by = machine_id
+
+                # Log change
+                change = ChangeLog(
+                    file_id=file.id,
+                    file_path=file.path,
+                    action="DELETED",
+                    version=file.version,
+                    machine_id=actual_machine_id,
+                )
+                session.add(change)
+                deleted_count += 1
+
+            session.commit()
+
+        return deleted_count
 
     def list_trash(self) -> list[FileMetadata]:
         """List deleted files.
