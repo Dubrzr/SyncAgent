@@ -4,11 +4,16 @@ import logging
 import socket
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
 
 from syncagent.client.api import HTTPClient
 from syncagent.client.state import LocalSyncState
+
+# Re-export from domain for backwards compatibility
+from syncagent.client.sync.domain.conflicts import (
+    ConflictOutcome,
+    RaceConditionError,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -333,15 +338,5 @@ def get_machine_name() -> str:
     return sanitize_machine_name(socket.gethostname())
 
 
-class RaceConditionError(Exception):
-    """Raised when a file is modified during conflict resolution."""
-
-    pass
-
-
-class ConflictOutcome(Enum):
-    """Outcome of conflict resolution."""
-
-    ALREADY_SYNCED = "already_synced"  # Hashes matched, no real conflict
-    RESOLVED = "resolved"  # Local renamed, server downloaded
-    RETRY_NEEDED = "retry_needed"  # Race condition, need to retry
+# Note: RaceConditionError and ConflictOutcome are now imported from domain/conflicts.py
+# and re-exported for backwards compatibility
