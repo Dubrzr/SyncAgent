@@ -239,17 +239,21 @@ class TestFileWatcher:
         # Create file BEFORE starting watcher to avoid creation event
         test_file = watch_dir / "todelete.txt"
         test_file.write_text("content")
-        time.sleep(0.1)  # Ensure file is written
+        time.sleep(0.5)  # Longer wait for filesystem to settle (macOS needs more time)
 
         with FileWatcher(watch_dir, event_queue, sync_delay_s=0.1):
-            time.sleep(0.3)  # Wait for watcher to be ready
+            time.sleep(0.5)  # Wait longer for watcher to be fully ready
+
+            # Drain any initial events from file creation
+            while event_queue.get(timeout=0.2) is not None:
+                pass
 
             # Delete the file
             test_file.unlink()
 
             # Collect events until we find deletion or timeout
             events = []
-            for _ in range(10):
+            for _ in range(15):  # More attempts for slow CI
                 event = event_queue.get(timeout=1.0)
                 if event is None:
                     break
@@ -333,10 +337,14 @@ class TestFileWatcher:
         # Create .syncignore BEFORE starting watcher
         syncignore = watch_dir / ".syncignore"
         syncignore.write_text("*.ignored\n")
-        time.sleep(0.1)
+        time.sleep(0.5)  # Longer wait for filesystem to settle (macOS needs more time)
 
         with FileWatcher(watch_dir, event_queue, sync_delay_s=0.1):
-            time.sleep(0.2)  # Wait for watcher to initialize
+            time.sleep(0.5)  # Wait longer for watcher to be fully ready
+
+            # Drain any initial events (e.g., .syncignore itself on some platforms)
+            while event_queue.get(timeout=0.2) is not None:
+                pass
 
             # Create an ignored file
             ignored_file = watch_dir / "test.ignored"
@@ -348,13 +356,14 @@ class TestFileWatcher:
 
             # Collect events
             events = []
-            for _ in range(5):
+            for _ in range(10):  # More attempts for slow CI
                 event = event_queue.get(timeout=1.0)
                 if event is None:
                     break
                 events.append(event)
 
         # Should have at least one event for normal.txt, and none for test.ignored
+        # Filter out .syncignore events which can occur on some platforms
         normal_events = [e for e in events if e.path == "normal.txt"]
         ignored_events = [e for e in events if e.path == "test.ignored"]
         assert len(normal_events) >= 1, f"Expected normal.txt event, got: {events}"
