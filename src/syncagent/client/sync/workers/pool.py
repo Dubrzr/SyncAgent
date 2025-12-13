@@ -101,7 +101,7 @@ class WorkerPool:
         self._key = encryption_key
         self._base_path = base_path
         self._state = state
-        self._max_workers = max_workers or os.cpu_count() or 4
+        self._max_workers = max_workers or max(os.cpu_count() or 4, 2)
 
         # Pool state
         self._pool_state = PoolState.STOPPED
