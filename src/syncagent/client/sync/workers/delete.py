@@ -19,7 +19,7 @@ from syncagent.client.sync.workers.base import (
 )
 
 if TYPE_CHECKING:
-    from syncagent.client.api import SyncClient
+    from syncagent.client.api import HTTPClient
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,7 @@ class DeleteWorker(BaseWorker):
 
     def __init__(
         self,
-        client: SyncClient,
+        client: HTTPClient,
         base_path: Path,
     ) -> None:
         """Initialize the delete worker.

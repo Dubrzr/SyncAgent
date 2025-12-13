@@ -87,6 +87,9 @@ def emit_events(
 ) -> SyncResult:
     """Emit sync events to a queue based on detected changes.
 
+    Detects conflicts when the same path has changes on both sides.
+    Conflict resolution: local changes win (upload), remote skipped.
+
     Args:
         queue: Event queue to push events to.
         local_changes: Changes detected locally.
@@ -95,7 +98,44 @@ def emit_events(
     Returns:
         SyncResult summarizing what was queued.
     """
-    # Push local events to queue
+    # Build sets for conflict detection
+    local_created_set = set(local_changes.created)
+    local_modified_set = set(local_changes.modified)
+    local_deleted_set = set(local_changes.deleted)
+    remote_created_set = set(remote_changes.created)
+    remote_modified_set = set(remote_changes.modified)
+    remote_deleted_set = set(remote_changes.deleted)
+
+    # Detect real conflicts: both sides have content changes
+    # - Local created/modified AND remote created/modified = conflict
+    local_content_changes = local_created_set | local_modified_set
+    remote_content_changes = remote_created_set | remote_modified_set
+    conflict_paths = local_content_changes & remote_content_changes
+
+    # Special cases (not conflicts - modification wins over deletion):
+    # - Local deleted + Remote modified → remote wins (download)
+    # - Local modified + Remote deleted → local wins (upload)
+    local_deleted_remote_modified = local_deleted_set & remote_content_changes
+    local_modified_remote_deleted = local_content_changes & remote_deleted_set
+
+    conflicts: list[str] = []
+    for path in conflict_paths:
+        # Log conflict - will be resolved by worker (server wins, local preserved)
+        logger.warning(f"Conflict detected for {path}: will be resolved during sync")
+        conflicts.append(path)
+
+    for path in local_deleted_remote_modified:
+        logger.info(f"Remote modification wins over local deletion: {path}")
+
+    for path in local_modified_remote_deleted:
+        logger.info(f"Local modification wins over remote deletion: {path}")
+
+    # Track what we queue
+    uploaded: list[str] = []
+    downloaded: list[str] = []
+    deleted: list[str] = []
+
+    # Push local events
     for path in local_changes.created:
         event = SyncEvent.create(
             event_type=SyncEventType.LOCAL_CREATED,
@@ -103,6 +143,7 @@ def emit_events(
             source=SyncEventSource.LOCAL,
         )
         queue.put(event)
+        uploaded.append(path)
         logger.debug(f"Queued LOCAL_CREATED: {path}")
 
     for path in local_changes.modified:
@@ -112,51 +153,68 @@ def emit_events(
             source=SyncEventSource.LOCAL,
         )
         queue.put(event)
+        uploaded.append(path)
         logger.debug(f"Queued LOCAL_MODIFIED: {path}")
 
     for path in local_changes.deleted:
+        # Skip if remote modification wins
+        if path in local_deleted_remote_modified:
+            logger.debug(f"Skipping LOCAL_DELETED (remote modification wins): {path}")
+            continue
         event = SyncEvent.create(
             event_type=SyncEventType.LOCAL_DELETED,
             path=path,
             source=SyncEventSource.LOCAL,
         )
         queue.put(event)
+        deleted.append(path)
         logger.debug(f"Queued LOCAL_DELETED: {path}")
 
-    # Push remote events to queue
+    # Push remote events (skip conflicts - local won)
     for path in remote_changes.created:
+        if path in conflict_paths:
+            logger.debug(f"Skipping REMOTE_CREATED (conflict): {path}")
+            continue
         event = SyncEvent.create(
             event_type=SyncEventType.REMOTE_CREATED,
             path=path,
             source=SyncEventSource.REMOTE,
         )
         queue.put(event)
+        downloaded.append(path)
         logger.debug(f"Queued REMOTE_CREATED: {path}")
 
     for path in remote_changes.modified:
+        if path in conflict_paths:
+            logger.debug(f"Skipping REMOTE_MODIFIED (conflict): {path}")
+            continue
         event = SyncEvent.create(
             event_type=SyncEventType.REMOTE_MODIFIED,
             path=path,
             source=SyncEventSource.REMOTE,
         )
         queue.put(event)
+        downloaded.append(path)
         logger.debug(f"Queued REMOTE_MODIFIED: {path}")
 
     for path in remote_changes.deleted:
+        if path in conflict_paths:
+            logger.debug(f"Skipping REMOTE_DELETED (conflict): {path}")
+            continue
         event = SyncEvent.create(
             event_type=SyncEventType.REMOTE_DELETED,
             path=path,
             source=SyncEventSource.REMOTE,
         )
         queue.put(event)
+        # Remote deletions don't go in our deleted list (that's local deletions)
         logger.debug(f"Queued REMOTE_DELETED: {path}")
 
-    # Return summary of what was queued
     return SyncResult(
-        uploaded=local_changes.created + local_changes.modified,
-        downloaded=remote_changes.created + remote_changes.modified,
-        deleted=local_changes.deleted,
-        conflicts=[],
+        uploaded=uploaded,
+        downloaded=downloaded,
+        deleted=deleted,
+        conflicts=conflicts,
         errors=[],
     )
 

@@ -17,8 +17,8 @@ import pytest
 import uvicorn
 from httpx import Client
 
-from syncagent.client.api import SyncClient
-from syncagent.client.state import SyncState
+from syncagent.client.api import HTTPClient
+from syncagent.client.state import LocalSyncState
 from syncagent.client.sync import ChangeScanner, FileDownloader, FileUploader
 from syncagent.core.config import ServerConfig
 from syncagent.core.crypto import derive_key, generate_salt
@@ -52,8 +52,8 @@ class SyncTestClient:
 
     name: str
     sync_folder: Path
-    state: SyncState
-    api_client: SyncClient
+    state: LocalSyncState
+    api_client: HTTPClient
     encryption_key: bytes
     uploader: FileUploader
     downloader: FileDownloader
@@ -194,7 +194,7 @@ def client_factory(
 
         # Create state database
         state_path = tmp_path / "clients" / name / "state.db"
-        state = SyncState(state_path)
+        state = LocalSyncState(state_path)
 
         # Register machine with server
         invitation = test_server.create_invitation()
@@ -213,7 +213,7 @@ def client_factory(
 
         # Create API client
         config = ServerConfig(server_url=test_server.url, token=token)
-        api_client = SyncClient(config)
+        api_client = HTTPClient(config)
 
         # Create uploader and downloader
         uploader = FileUploader(api_client, encryption_key)

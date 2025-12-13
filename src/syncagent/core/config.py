@@ -53,3 +53,6 @@ class ServerConfig:
             True if server uses HTTPS.>
         """
         return self.server_url.startswith("https://")
+
+    def __repr__(self):
+        return f"server_url={self.server_url} (timeout={self.timeout})"

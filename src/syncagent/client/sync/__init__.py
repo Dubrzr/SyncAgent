@@ -26,8 +26,14 @@ from syncagent.client.sync.change_scanner import (
     emit_events,
 )
 from syncagent.client.sync.conflict import (
+    ConflictOutcome,
+    ConflictResolution,
+    RaceConditionError,
+    check_download_conflict,
     generate_conflict_filename,
     get_machine_name,
+    resolve_upload_conflict,
+    safe_rename_for_conflict,
 )
 from syncagent.client.sync.coordinator import SyncCoordinator
 from syncagent.client.sync.ignore import IgnorePatterns
@@ -146,8 +152,14 @@ __all__ = [
     "WorkerState",
     "WorkerTask",
     # Conflict utilities
+    "ConflictOutcome",
+    "ConflictResolution",
+    "RaceConditionError",
+    "check_download_conflict",
     "generate_conflict_filename",
     "get_machine_name",
+    "resolve_upload_conflict",
+    "safe_rename_for_conflict",
     # Watcher
     "ChangeType",
     "FileChange",

@@ -127,7 +127,7 @@ class ChangesResult:
     latest_timestamp: datetime | None
 
 
-class SyncClient:
+class HTTPClient:
     """HTTP client for SyncAgent server API."""
 
     def __init__(self, config: ServerConfig) -> None:
@@ -153,7 +153,7 @@ class SyncClient:
         """Close the HTTP client."""
         self._client.close()
 
-    def __enter__(self) -> SyncClient:
+    def __enter__(self) -> HTTPClient:
         """Context manager entry."""
         return self
 

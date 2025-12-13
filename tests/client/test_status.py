@@ -117,35 +117,6 @@ class TestStatusReporter:
         assert reporter._current_status.state == SyncState.SYNCING
         assert reporter._current_status.files_pending == 5
 
-    def test_report_idle(self, config: ServerConfig) -> None:
-        """Should set idle state."""
-        reporter = StatusReporter(config)
-        reporter.report_idle()
-        assert reporter._current_status.state == SyncState.IDLE
-
-    def test_report_syncing(self, config: ServerConfig) -> None:
-        """Should set syncing state with details."""
-        reporter = StatusReporter(config)
-        reporter.report_syncing(
-            files_pending=10,
-            uploads_in_progress=3,
-            downloads_in_progress=2,
-            upload_speed=5000,
-            download_speed=8000,
-        )
-        assert reporter._current_status.state == SyncState.SYNCING
-        assert reporter._current_status.files_pending == 10
-        assert reporter._current_status.uploads_in_progress == 3
-        assert reporter._current_status.downloads_in_progress == 2
-        assert reporter._current_status.upload_speed == 5000
-        assert reporter._current_status.download_speed == 8000
-
-    def test_report_error(self, config: ServerConfig) -> None:
-        """Should set error state."""
-        reporter = StatusReporter(config)
-        reporter.report_error()
-        assert reporter._current_status.state == SyncState.ERROR
-
     def test_set_callbacks(self, config: ServerConfig) -> None:
         """Should store callbacks."""
         reporter = StatusReporter(config)

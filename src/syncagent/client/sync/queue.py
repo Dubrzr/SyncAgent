@@ -11,6 +11,7 @@ The queue enables the coordinator to process events in optimal order:
 - DOWNLOAD events have lowest priority
 
 Events are deduplicated by path - only the most recent event per path is kept.
+Conflict handling is done at execution time by workers, not by the queue.
 
 Usage with FileWatcher:
     queue = EventQueue()
@@ -180,6 +181,10 @@ class EventQueue:
 
         If an event for this path already exists, it is replaced.
         This implements deduplication - only the latest event per path is kept.
+
+        Conflict handling is NOT done here - it's handled at execution time by
+        workers (check_download_conflict, resolve_upload_conflict) which can
+        detect modifications that occurred between queuing and execution.
 
         Args:
             event: The event to add

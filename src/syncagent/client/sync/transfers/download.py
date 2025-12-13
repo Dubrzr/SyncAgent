@@ -23,7 +23,7 @@ from syncagent.client.sync.types import (
 from syncagent.core.crypto import decrypt_chunk
 
 if TYPE_CHECKING:
-    from syncagent.client.api import ServerFile, SyncClient
+    from syncagent.client.api import HTTPClient, ServerFile
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +39,7 @@ class FileDownloader:
 
     def __init__(
         self,
-        client: SyncClient,
+        client: HTTPClient,
         encryption_key: bytes,
         progress_callback: ProgressCallback | None = None,
         max_retries: int = DEFAULT_MAX_RETRIES,

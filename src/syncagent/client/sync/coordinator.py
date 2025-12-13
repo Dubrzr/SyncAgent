@@ -375,9 +375,6 @@ class SyncCoordinator:
         Args:
             event: The event to dispatch
         """
-        # Import here to avoid circular imports
-        from syncagent.client.sync.workers.upload import EarlyConflictException
-
         # Determine transfer type based on event
         transfer_type = self._event_to_transfer_type(event)
         if transfer_type is None:
@@ -433,27 +430,6 @@ class SyncCoordinator:
                 transfer.status = TransferStatus.FAILED
                 self._stats.errors += 1
                 logger.error("Transfer failed: %s", event.path)
-
-        except EarlyConflictException as e:
-            # Phase 15.7: Early conflict detection
-            transfer.status = TransferStatus.FAILED
-            transfer.set_conflict(
-                e.conflict_error.conflict_type,
-                e.conflict_error.actual_version,
-            )
-            transfer.error = str(e)
-            self._stats.conflicts_detected += 1
-            logger.warning(
-                "Early conflict on %s: expected v%s, server has v%s (%s)",
-                event.path,
-                e.conflict_error.expected_version,
-                e.conflict_error.actual_version,
-                e.conflict_error.conflict_type.name,
-            )
-
-            # Notify via conflict callback
-            if self._on_conflict:
-                self._on_conflict(event.path, event, event)  # Same event for early conflict
 
         except Exception as e:
             transfer.status = TransferStatus.FAILED

@@ -7,10 +7,10 @@ import pytest
 from syncagent.client.api import (
     AuthenticationError,
     ConflictError,
+    HTTPClient,
     NotFoundError,
     ServerFile,
     ServerMachine,
-    SyncClient,
 )
 from syncagent.core.config import ServerConfig
 
@@ -101,14 +101,14 @@ class TestSyncClient:
         """Should return True when server is healthy."""
         httpx_mock.add_response(url="http://test/health", json={"status": "ok"})
 
-        with SyncClient(make_config()) as client:
+        with HTTPClient(make_config()) as client:
             assert client.health_check() is True
 
     def test_health_check_failure(self, httpx_mock) -> None:  # type: ignore[no-untyped-def]
         """Should return False when server is down."""
         httpx_mock.add_response(url="http://test/health", status_code=500)
 
-        with SyncClient(make_config()) as client:
+        with HTTPClient(make_config()) as client:
             assert client.health_check() is False
 
     def test_list_files(self, httpx_mock) -> None:  # type: ignore[no-untyped-def]
@@ -139,7 +139,7 @@ class TestSyncClient:
             ],
         )
 
-        with SyncClient(make_config()) as client:
+        with HTTPClient(make_config()) as client:
             files = client.list_files()
 
         assert len(files) == 2
@@ -164,7 +164,7 @@ class TestSyncClient:
             ],
         )
 
-        with SyncClient(make_config()) as client:
+        with HTTPClient(make_config()) as client:
             files = client.list_files(prefix="docs/")
 
         assert len(files) == 1
@@ -186,7 +186,7 @@ class TestSyncClient:
             },
         )
 
-        with SyncClient(make_config()) as client:
+        with HTTPClient(make_config()) as client:
             file = client.get_file("docs/readme.txt")
 
         assert file.path == "docs/readme.txt"
@@ -200,7 +200,7 @@ class TestSyncClient:
             json={"detail": "File not found"},
         )
 
-        with SyncClient(make_config()) as client, pytest.raises(NotFoundError):
+        with HTTPClient(make_config()) as client, pytest.raises(NotFoundError):
             client.get_file("missing.txt")
 
     def test_create_file(self, httpx_mock) -> None:  # type: ignore[no-untyped-def]
@@ -221,7 +221,7 @@ class TestSyncClient:
             },
         )
 
-        with SyncClient(make_config()) as client:
+        with HTTPClient(make_config()) as client:
             file = client.create_file(
                 path="new.txt",
                 size=500,
@@ -250,7 +250,7 @@ class TestSyncClient:
             },
         )
 
-        with SyncClient(make_config()) as client:
+        with HTTPClient(make_config()) as client:
             file = client.update_file(
                 path="existing.txt",
                 size=1000,
@@ -271,7 +271,7 @@ class TestSyncClient:
         )
 
         with (
-            SyncClient(make_config()) as client,
+            HTTPClient(make_config()) as client,
             pytest.raises(ConflictError, match="Version conflict"),
         ):
             client.update_file(
@@ -290,7 +290,7 @@ class TestSyncClient:
             status_code=204,
         )
 
-        with SyncClient(make_config()) as client:
+        with HTTPClient(make_config()) as client:
             client.delete_file("todelete.txt")
 
     def test_get_file_chunks(self, httpx_mock) -> None:  # type: ignore[no-untyped-def]
@@ -300,7 +300,7 @@ class TestSyncClient:
             json=["chunk1hash", "chunk2hash", "chunk3hash"],
         )
 
-        with SyncClient(make_config()) as client:
+        with HTTPClient(make_config()) as client:
             chunks = client.get_file_chunks("myfile.txt")
 
         assert chunks == ["chunk1hash", "chunk2hash", "chunk3hash"]
@@ -313,7 +313,7 @@ class TestSyncClient:
             status_code=201,
         )
 
-        with SyncClient(make_config()) as client:
+        with HTTPClient(make_config()) as client:
             client.upload_chunk("abc123", b"encrypted data")
 
     def test_download_chunk(self, httpx_mock) -> None:  # type: ignore[no-untyped-def]
@@ -324,7 +324,7 @@ class TestSyncClient:
             content=chunk_data,
         )
 
-        with SyncClient(make_config()) as client:
+        with HTTPClient(make_config()) as client:
             data = client.download_chunk("xyz789")
 
         assert data == chunk_data
@@ -337,7 +337,7 @@ class TestSyncClient:
             json={"detail": "Chunk not found"},
         )
 
-        with SyncClient(make_config()) as client, pytest.raises(NotFoundError):
+        with HTTPClient(make_config()) as client, pytest.raises(NotFoundError):
             client.download_chunk("missing")
 
     def test_chunk_exists_true(self, httpx_mock) -> None:  # type: ignore[no-untyped-def]
@@ -348,7 +348,7 @@ class TestSyncClient:
             status_code=200,
         )
 
-        with SyncClient(make_config()) as client:
+        with HTTPClient(make_config()) as client:
             assert client.chunk_exists("exists123") is True
 
     def test_chunk_exists_false(self, httpx_mock) -> None:  # type: ignore[no-untyped-def]
@@ -359,7 +359,7 @@ class TestSyncClient:
             status_code=404,
         )
 
-        with SyncClient(make_config()) as client:
+        with HTTPClient(make_config()) as client:
             assert client.chunk_exists("notfound") is False
 
     def test_authentication_error(self, httpx_mock) -> None:  # type: ignore[no-untyped-def]
@@ -370,7 +370,7 @@ class TestSyncClient:
             json={"detail": "Invalid token"},
         )
 
-        with SyncClient(make_config(token="badtoken")) as client, pytest.raises(AuthenticationError):
+        with HTTPClient(make_config(token="badtoken")) as client, pytest.raises(AuthenticationError):
             client.list_files()
 
     def test_list_machines(self, httpx_mock) -> None:  # type: ignore[no-untyped-def]
@@ -388,7 +388,7 @@ class TestSyncClient:
             ],
         )
 
-        with SyncClient(make_config()) as client:
+        with HTTPClient(make_config()) as client:
             machines = client.list_machines()
 
         assert len(machines) == 1
@@ -412,7 +412,7 @@ class TestSyncClient:
             ],
         )
 
-        with SyncClient(make_config()) as client:
+        with HTTPClient(make_config()) as client:
             files = client.list_trash()
 
         assert len(files) == 1
@@ -435,14 +435,14 @@ class TestSyncClient:
             },
         )
 
-        with SyncClient(make_config()) as client:
+        with HTTPClient(make_config()) as client:
             file = client.restore_file("deleted.txt")
 
         assert file.deleted_at is None
 
     def test_context_manager(self) -> None:
         """Should work as context manager."""
-        client = SyncClient(make_config())
+        client = HTTPClient(make_config())
         with client as c:
             assert c is client
         # Client should be closed after context
@@ -451,5 +451,5 @@ class TestSyncClient:
         """Should handle trailing slash in server URL."""
         httpx_mock.add_response(url="http://test/health", json={"status": "ok"})
 
-        with SyncClient(make_config(server_url="http://test/")) as client:
+        with HTTPClient(make_config(server_url="http://test/")) as client:
             assert client.health_check() is True

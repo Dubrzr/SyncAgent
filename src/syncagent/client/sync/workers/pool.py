@@ -26,8 +26,8 @@ from syncagent.client.sync.workers.upload import UploadWorker
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from syncagent.client.api import SyncClient
-    from syncagent.client.state import SyncState
+    from syncagent.client.api import HTTPClient
+    from syncagent.client.state import LocalSyncState
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +83,10 @@ class WorkerPool:
 
     def __init__(
         self,
-        client: SyncClient,
+        client: HTTPClient,
         encryption_key: bytes,
         base_path: Path,
-        state: SyncState | None = None,
+        state: LocalSyncState | None = None,
         max_workers: int | None = None,
     ) -> None:
         """Initialize the worker pool.

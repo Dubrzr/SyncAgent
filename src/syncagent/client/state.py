@@ -103,7 +103,7 @@ class UploadProgress:
         return (self.uploaded_chunks / self.total_chunks) * 100
 
 
-class SyncState:
+class LocalSyncState:
     """SQLite-based local state for sync client."""
 
     def __init__(self, db_path: Path) -> None:

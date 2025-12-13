@@ -10,6 +10,11 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from syncagent.client.api import ConflictError
+from syncagent.client.sync.conflict import (
+    ConflictOutcome,
+    resolve_upload_conflict,
+)
 from syncagent.client.sync.transfers import FileUploader, UploadCancelledError
 from syncagent.client.sync.types import EarlyConflictError, UploadResult
 from syncagent.client.sync.workers.base import (
@@ -18,20 +23,9 @@ from syncagent.client.sync.workers.base import (
     WorkerContext,
 )
 
-
-class EarlyConflictException(CancelledException):
-    """Raised when an early conflict is detected (Phase 15.7).
-
-    Contains the original EarlyConflictError with conflict details.
-    """
-
-    def __init__(self, error: EarlyConflictError) -> None:
-        super().__init__(str(error))
-        self.conflict_error = error
-
 if TYPE_CHECKING:
-    from syncagent.client.api import SyncClient
-    from syncagent.client.state import SyncState
+    from syncagent.client.api import HTTPClient
+    from syncagent.client.state import LocalSyncState
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +42,10 @@ class UploadWorker(BaseWorker):
 
     def __init__(
         self,
-        client: SyncClient,
+        client: HTTPClient,
         encryption_key: bytes,
         base_path: Path,
-        sync_state: SyncState | None = None,
+        sync_state: LocalSyncState | None = None,
     ) -> None:
         """Initialize the upload worker.
 
@@ -115,8 +109,51 @@ class UploadWorker(BaseWorker):
                 cancel_check=ctx.cancel_check,
             )
             return result
-        except EarlyConflictError as e:
-            # Phase 15.7: Early conflict detection
-            raise EarlyConflictException(e) from e
+        except (EarlyConflictError, ConflictError) as e:
+            # Conflict detected - resolve using "Server Wins + Local Preserved"
+            logger.info(f"Conflict detected for {relative_path}: {e}")
+            return self._handle_conflict(relative_path, local_path)
         except UploadCancelledError as e:
             raise CancelledException(str(e)) from e
+
+    def _handle_conflict(self, relative_path: str, local_path: Path) -> UploadResult:
+        """Handle a version conflict by resolving with server priority.
+
+        Args:
+            relative_path: Relative path of the file.
+            local_path: Absolute path to the local file.
+
+        Returns:
+            UploadResult indicating the conflict was handled.
+
+        Raises:
+            CancelledException: If conflict resolution failed and needs retry.
+        """
+        if self._sync_state is None:
+            raise RuntimeError("Cannot handle conflict without sync state")
+
+        resolution = resolve_upload_conflict(
+            client=self._client,
+            encryption_key=self._key,
+            local_path=local_path,
+            relative_path=relative_path,
+            state=self._sync_state,
+            base_path=self._base_path,
+        )
+
+        if resolution.outcome == ConflictOutcome.RETRY_NEEDED:
+            # Race condition - let worker pool retry
+            raise CancelledException("Conflict resolution failed, retry needed")
+
+        # Both ALREADY_SYNCED and RESOLVED are considered success
+        # Get the current server file info to build the result
+        server_file = self._client.get_file(relative_path)
+
+        return UploadResult(
+            path=relative_path,
+            server_file_id=server_file.id,
+            server_version=server_file.version,
+            chunk_hashes=[],  # Not relevant for conflict resolution
+            size=server_file.size,
+            content_hash=server_file.content_hash,
+        )

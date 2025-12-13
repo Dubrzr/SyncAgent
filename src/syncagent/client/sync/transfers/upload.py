@@ -24,8 +24,8 @@ from syncagent.core.chunking import Chunk, chunk_file
 from syncagent.core.crypto import compute_file_hash, encrypt_chunk
 
 if TYPE_CHECKING:
-    from syncagent.client.api import SyncClient
-    from syncagent.client.state import SyncState
+    from syncagent.client.api import HTTPClient
+    from syncagent.client.state import LocalSyncState
 
 from syncagent.client.api import ConflictError
 
@@ -50,10 +50,10 @@ class FileUploader:
 
     def __init__(
         self,
-        client: SyncClient,
+        client: HTTPClient,
         encryption_key: bytes,
         progress_callback: ProgressCallback | None = None,
-        state: SyncState | None = None,
+        state: LocalSyncState | None = None,
         max_retries: int = DEFAULT_MAX_RETRIES,
         enable_early_conflict_check: bool = True,
         version_check_interval: int = VERSION_CHECK_INTERVAL,

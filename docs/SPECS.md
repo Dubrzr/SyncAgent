@@ -1078,6 +1078,12 @@ def download_file(file_id: str, version_id: str, local_path: str):
 
 ## 5. Gestion des Conflits
 
+fileA ()
+fileB ()
+
+if fileA
+
+
 ### 5.1 Stratégie : Duplication automatique
 Quand deux machines modifient le même fichier depuis la même version de base :
 ```

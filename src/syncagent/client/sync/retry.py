@@ -14,7 +14,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from syncagent.client.api import SyncClient
+    from syncagent.client.api import HTTPClient
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,7 @@ NETWORK_EXCEPTIONS: tuple[type[Exception], ...] = (
 
 
 def wait_for_network(
-    client: SyncClient,
+    client: HTTPClient,
     check_interval: float = NETWORK_CHECK_INTERVAL,
     on_waiting: Callable[[], None] | None = None,
     on_restored: Callable[[], None] | None = None,
@@ -130,7 +130,7 @@ def retry_with_backoff(
 
 def retry_with_network_wait(
     func: Callable[[], Any],
-    client: SyncClient,
+    client: HTTPClient,
     max_retries: int = DEFAULT_MAX_RETRIES,
     initial_backoff: float = DEFAULT_INITIAL_BACKOFF,
     max_backoff: float = DEFAULT_MAX_BACKOFF,
