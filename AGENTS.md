@@ -7,6 +7,71 @@ Rules for AI Agents :
 
 When you have zero context, start by reading the README.md, docs/* and TODO.md to see where we are on this project, explore code if necessary
 
+## Spec-Driven Development
+
+### Specs in `docs/`
+
+All feature specifications live in `docs/` as Markdown files. Code and tests reference these specs instead of duplicating documentation.
+
+```
+docs/
+├── cli/
+│   ├── init.md      # Spec for 'syncagent init' command
+│   ├── register.md  # Spec for 'syncagent register' command
+│   ├── sync.md      # Spec for 'syncagent sync' command
+│   └── server.md    # Spec for 'syncagent server' command
+└── ...
+```
+
+### Code points to specs
+
+At the top of implementation files, reference the spec:
+
+```python
+"""Server command for SyncAgent CLI.
+
+Spec: docs/cli/server.md
+"""
+```
+
+### Tests: scenarios first, then implementation
+
+Test files should:
+1. Reference the spec at the top
+2. List all test scenarios as a checklist in comments
+3. Implement tests after scenarios are defined
+
+```python
+"""Tests for 'syncagent register' command.
+
+Spec: docs/cli/register.md
+
+Test Scenarios:
+---------------
+
+register:
+    - [x] Succeeds with valid invitation token
+    - [x] Saves server_url, auth_token, machine_name in config
+    - [x] Fails if not initialized
+    - [x] Fails with invalid token
+    - [ ] Fails with duplicate machine name  # TODO
+"""
+```
+
+### Benefits
+
+1. **Single source of truth**: Specs in docs, not scattered in code comments
+2. **Test planning**: Writing scenarios first ensures coverage before coding
+3. **Discoverability**: Easy to find what a feature should do
+4. **Maintenance**: Update spec once, code/tests follow
+
+### Workflow
+
+1. **New feature**: Write spec in `docs/` first
+2. **Implementation**: Create code file, add `Spec: docs/...` reference
+3. **Testing**: Create test file, list scenarios, mark as `[ ]`
+4. **Implement tests**: Write test, mark scenario as `[x]`
+
 ## Architecture DDD (Domain-Driven Design)
 
 The sync system follows a DDD architecture. You MUST continue with this approach:

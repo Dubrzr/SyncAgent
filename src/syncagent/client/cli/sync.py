@@ -1,5 +1,7 @@
 """Sync command for SyncAgent CLI.
 
+Spec: docs/cli/sync.md
+
 Commands:
 - sync: Synchronize files with the server
 """

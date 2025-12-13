@@ -1,5 +1,10 @@
 """Keystore management commands for SyncAgent CLI.
 
+Specs:
+- docs/cli/init.md
+- docs/cli/reset.md
+- docs/cli/unlock.md
+
 Commands:
 - init: Initialize a new keystore
 - reset: Reset SyncAgent configuration
@@ -219,7 +224,7 @@ def import_key(key: str) -> None:
 
     try:
         keystore = load_keystore(password, config_dir)
-        keystore.import_key(key)
+        keystore.import_key(key, password)
         click.echo("Encryption key imported successfully!")
         click.echo(f"New Key ID: {keystore.key_id}")
     except KeyStoreError as e:

@@ -140,7 +140,7 @@ class TestKeyExportImport:
 
         # Create new keystore and import key
         ks2 = create_keystore("password2", tmp_path / "ks2")
-        ks2.import_key(exported)
+        ks2.import_key(exported, "password2")
 
         assert ks2.encryption_key == ks1.encryption_key
 
@@ -151,7 +151,7 @@ class TestKeyExportImport:
 
         ks2 = create_keystore("password2", tmp_path / "ks2")
         original_keyfile = (tmp_path / "ks2" / "keyfile.json").read_text()
-        ks2.import_key(exported)
+        ks2.import_key(exported, "password2")
         updated_keyfile = (tmp_path / "ks2" / "keyfile.json").read_text()
 
         assert original_keyfile != updated_keyfile
@@ -160,7 +160,7 @@ class TestKeyExportImport:
         """Import should fail with invalid base64."""
         keystore = create_keystore("password", tmp_path)
         with pytest.raises(KeyStoreError, match="Invalid key"):
-            keystore.import_key("not-valid-base64!!!")
+            keystore.import_key("not-valid-base64!!!", "password")
 
     def test_import_wrong_length_key_fails(self, tmp_path: Path) -> None:
         """Import should fail if key is not 32 bytes."""
@@ -169,7 +169,7 @@ class TestKeyExportImport:
         keystore = create_keystore("password", tmp_path)
         short_key = base64.b64encode(b"short").decode()
         with pytest.raises(KeyStoreError, match="must be 32 bytes"):
-            keystore.import_key(short_key)
+            keystore.import_key(short_key, "password")
 
 
 class TestKeyStoreKeyId:
@@ -198,6 +198,6 @@ class TestKeyStoreKeyId:
         original_id = keystore.key_id
 
         new_key = base64.b64encode(os.urandom(32)).decode()
-        keystore.import_key(new_key)
+        keystore.import_key(new_key, "password")
 
         assert keystore.key_id != original_id

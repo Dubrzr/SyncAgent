@@ -104,11 +104,12 @@ class KeyStore:
         """
         return base64.b64encode(self.encryption_key).decode()
 
-    def import_key(self, key_b64: str) -> None:
+    def import_key(self, key_b64: str, password: str) -> None:
         """Import an encryption key from base64.
 
         Args:
             key_b64: Base64-encoded encryption key.
+            password: Master password to re-encrypt the new key.
 
         Raises:
             KeyStoreError: If the key is invalid.
@@ -121,13 +122,18 @@ class KeyStore:
         if len(key) != 32:
             raise KeyStoreError(f"Invalid key: must be 32 bytes, got {len(key)}")
 
-        # Update encryption key
+        # Generate new salt and re-encrypt the key with new master key
+        new_salt = generate_salt()
+        master_key = derive_key(password, new_salt)
+        encrypted_key = encrypt_chunk(key, master_key)
+
+        # Update keystore state
         self._encryption_key = key
+        self._salt = new_salt
+        self._encrypted_master_key = encrypted_key
         self._key_id = str(uuid.uuid4())
 
-        # Re-encrypt with current master key and save
-        # Note: We need the password to do this properly
-        # For now, we'll just update in memory and the keyfile
+        # Save the updated keyfile
         self._save_keyfile()
 
         # Update keyring cache

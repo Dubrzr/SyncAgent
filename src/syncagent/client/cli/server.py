@@ -1,32 +1,34 @@
-"""Server administration commands for SyncAgent CLI.
+"""Server command for SyncAgent CLI.
+
+Spec: docs/cli/server.md
 
 Commands:
-- server purge-trash: Purge old items from trash
+- server: Start the SyncAgent server
 """
 
 from __future__ import annotations
 
-import sys
+import os
 from pathlib import Path
 
 import click
 
 
-@click.group()
-def server() -> None:
-    """Server management commands.
-
-    These commands are for server administrators to manage the SyncAgent server.
-    """
-
-
-@server.command("purge-trash")
+@click.command()
 @click.option(
-    "--older-than-days",
-    "-d",
+    "--host",
+    "-h",
+    default="0.0.0.0",
+    help="Host to bind to.",
+    show_default=True,
+)
+@click.option(
+    "--port",
+    "-p",
     type=int,
-    default=None,
-    help="Delete items older than N days (default: use server config).",
+    default=8000,
+    help="Port to listen on.",
+    show_default=True,
 )
 @click.option(
     "--db-path",
@@ -38,64 +40,64 @@ def server() -> None:
     "--storage-path",
     type=click.Path(),
     default=None,
-    help="Path to local storage (default: SYNCAGENT_STORAGE_PATH or ./storage).",
+    help="Path to chunk storage (default: SYNCAGENT_STORAGE_PATH or ./storage).",
 )
-def purge_trash_cmd(
-    older_than_days: int | None,
+@click.option(
+    "--reload",
+    is_flag=True,
+    help="Enable auto-reload for development.",
+)
+def server(
+    host: str,
+    port: int,
     db_path: str | None,
     storage_path: str | None,
+    reload: bool,
 ) -> None:
-    """Purge old items from trash.
+    """Start the SyncAgent server.
 
-    Permanently deletes files that have been in trash longer than the
-    specified number of days. Also removes associated chunk data from storage.
-
-    This command can be run manually or via cron for scheduled cleanup.
+    Starts the file synchronization server using uvicorn.
+    The server provides REST API, WebSocket status updates, and a web dashboard.
 
     Examples:
 
-        # Purge using server defaults (30 days)
-        syncagent server purge-trash
+        # Start with defaults (0.0.0.0:8000)
+        syncagent server
 
-        # Purge items older than 7 days
-        syncagent server purge-trash --older-than-days 7
+        # Start on specific port
+        syncagent server --port 9000
 
-        # Use custom database path
-        syncagent server purge-trash --db-path /var/lib/syncagent/syncagent.db
+        # Development mode with auto-reload
+        syncagent server --reload
     """
-    import os
+    import uvicorn
 
-    from syncagent.server.database import Database
-    from syncagent.server.scheduler import purge_trash_with_storage
-    from syncagent.server.storage import LocalFSStorage
+    # Set environment variables for the server to pick up
+    if db_path:
+        os.environ["SYNCAGENT_DB_PATH"] = str(Path(db_path).resolve())
+    if storage_path:
+        os.environ["SYNCAGENT_STORAGE_PATH"] = str(Path(storage_path).resolve())
 
-    # Resolve paths from args or environment
-    resolved_db_path = db_path or os.environ.get("SYNCAGENT_DB_PATH", "syncagent.db")
-    resolved_storage_path = storage_path or os.environ.get("SYNCAGENT_STORAGE_PATH", "storage")
+    # Resolve paths for display
+    resolved_db = os.environ.get("SYNCAGENT_DB_PATH", "syncagent.db")
+    resolved_storage = os.environ.get("SYNCAGENT_STORAGE_PATH", "storage")
 
-    # Default retention days
-    default_days = int(os.environ.get("SYNCAGENT_TRASH_RETENTION_DAYS", "30"))
-    days = older_than_days if older_than_days is not None else default_days
+    click.echo("Starting SyncAgent server...")
+    click.echo(f"  Host: {host}")
+    click.echo(f"  Port: {port}")
+    click.echo(f"  Database: {resolved_db}")
+    click.echo(f"  Storage: {resolved_storage}")
+    if reload:
+        click.echo("  Auto-reload: enabled")
+    click.echo("")
+    click.echo(f"Open http://{host if host != '0.0.0.0' else 'localhost'}:{port} to access the dashboard")
+    click.echo("")
 
-    db_file = Path(resolved_db_path)
-    if not db_file.exists():
-        click.echo(f"Error: Database not found: {db_file}", err=True)
-        click.echo("Make sure the server has been run at least once.", err=True)
-        sys.exit(1)
-
-    click.echo(f"Database: {db_file}")
-    click.echo(f"Storage: {resolved_storage_path}")
-    click.echo(f"Purging items older than {days} days...")
-
-    db = Database(db_file)
-    storage = LocalFSStorage(resolved_storage_path)
-
-    try:
-        files_deleted, chunks_deleted = purge_trash_with_storage(db, storage, days)
-
-        if files_deleted > 0:
-            click.echo(f"Purged {files_deleted} files, {chunks_deleted} chunks deleted from storage.")
-        else:
-            click.echo("No items to purge.")
-    finally:
-        db.close()
+    # Run uvicorn
+    uvicorn.run(
+        "syncagent.server.app:app",
+        host=host,
+        port=port,
+        reload=reload,
+        log_level="info",
+    )

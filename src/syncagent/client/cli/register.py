@@ -1,5 +1,7 @@
 """Machine registration command for SyncAgent CLI.
 
+Spec: docs/cli/register.md
+
 Commands:
 - register: Register this machine with a server
 """
