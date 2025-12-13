@@ -222,39 +222,6 @@ class StatusReporter:
             # Don't block, but log any errors
             future.add_done_callback(self._on_send_complete)
 
-    def report_idle(self) -> None:
-        """Report idle state."""
-        self.update_status(StatusUpdate(state=SyncState.IDLE))
-
-    def report_syncing(
-        self,
-        files_pending: int = 0,
-        uploads_in_progress: int = 0,
-        downloads_in_progress: int = 0,
-        upload_speed: int = 0,
-        download_speed: int = 0,
-    ) -> None:
-        """Report syncing state with details.
-
-        Args:
-            files_pending: Number of files in queue.
-            uploads_in_progress: Number of active uploads.
-            downloads_in_progress: Number of active downloads.
-            upload_speed: Upload speed in bytes/sec.
-            download_speed: Download speed in bytes/sec.
-        """
-        self.update_status(StatusUpdate(
-            state=SyncState.SYNCING,
-            files_pending=files_pending,
-            uploads_in_progress=uploads_in_progress,
-            downloads_in_progress=downloads_in_progress,
-            upload_speed=upload_speed,
-            download_speed=download_speed,
-        ))
-
-    def report_error(self) -> None:
-        """Report error state."""
-        self.update_status(StatusUpdate(state=SyncState.ERROR))
 
     def _on_send_complete(self, future: Any) -> None:
         """Callback when send completes."""
