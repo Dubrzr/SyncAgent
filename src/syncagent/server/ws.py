@@ -44,6 +44,8 @@ class MachineStatus:
         downloads_in_progress: Number of files currently being downloaded.
         upload_speed: Upload speed in bytes/second.
         download_speed: Download speed in bytes/second.
+        file_count: Number of files synced by this machine.
+        total_size: Total size of files synced by this machine.
         last_update: When this status was last updated.
     """
 
@@ -55,6 +57,8 @@ class MachineStatus:
     downloads_in_progress: int = 0
     upload_speed: int = 0
     download_speed: int = 0
+    file_count: int = 0
+    total_size: int = 0
     last_update: datetime = field(default_factory=lambda: datetime.now(UTC))
 
     def to_dict(self) -> dict[str, str | int | None]:
@@ -68,6 +72,8 @@ class MachineStatus:
             "downloads_in_progress": self.downloads_in_progress,
             "upload_speed": self.upload_speed,
             "download_speed": self.download_speed,
+            "file_count": self.file_count,
+            "total_size": self.total_size,
             "last_update": self.last_update.isoformat(),
         }
 
@@ -82,17 +88,42 @@ class StatusHub:
     Thread-safe for use with asyncio.
     """
 
-    def __init__(self, offline_timeout_seconds: int = 30) -> None:
+    def __init__(
+        self,
+        offline_timeout_seconds: int = 30,
+        db: Database | None = None,
+    ) -> None:
         """Initialize the hub.
 
         Args:
             offline_timeout_seconds: Time without update before marking offline.
+            db: Database instance for fetching file stats.
         """
         self._client_connections: dict[int, WebSocket] = {}  # machine_id -> ws
         self._dashboard_connections: set[WebSocket] = set()
         self._machine_status: dict[int, MachineStatus] = {}
         self._offline_timeout = offline_timeout_seconds
+        self._db = db
         self._lock = asyncio.Lock()
+
+    def set_db(self, db: Database) -> None:
+        """Set the database reference (for late binding)."""
+        self._db = db
+
+    def _fetch_machine_stats(self, machine_id: int) -> tuple[int, int]:
+        """Fetch file count and total size for a machine.
+
+        Returns:
+            Tuple of (file_count, total_size).
+        """
+        if not self._db:
+            return (0, 0)
+        try:
+            stats = self._db.get_machine_stats(machine_id)
+            return (stats.get("file_count", 0), stats.get("total_size", 0))
+        except Exception:
+            logger.warning("Failed to fetch stats for machine %d", machine_id)
+            return (0, 0)
 
     async def connect_client(
         self,
@@ -109,6 +140,9 @@ class StatusHub:
         """
         await websocket.accept()
 
+        # Fetch initial stats from database
+        file_count, total_size = self._fetch_machine_stats(machine_id)
+
         async with self._lock:
             # Close old connection if exists
             old_ws = self._client_connections.get(machine_id)
@@ -124,9 +158,13 @@ class StatusHub:
                     machine_id=machine_id,
                     machine_name=machine_name,
                     state=SyncState.IDLE,
+                    file_count=file_count,
+                    total_size=total_size,
                 )
             else:
                 self._machine_status[machine_id].state = SyncState.IDLE
+                self._machine_status[machine_id].file_count = file_count
+                self._machine_status[machine_id].total_size = total_size
                 self._machine_status[machine_id].last_update = datetime.now(UTC)
 
         logger.info("Client connected: %s (id=%d)", machine_name, machine_id)
@@ -200,6 +238,19 @@ class StatusHub:
             upload_speed: Upload speed in bytes/second.
             download_speed: Download speed in bytes/second.
         """
+        # Check if state is changing to idle (sync completed)
+        # If so, refresh file stats from database
+        refresh_stats = False
+        async with self._lock:
+            if machine_id in self._machine_status:
+                old_state = self._machine_status[machine_id].state
+                if state == SyncState.IDLE and old_state != SyncState.IDLE:
+                    refresh_stats = True
+
+        # Fetch stats outside the lock if needed
+        if refresh_stats:
+            file_count, total_size = self._fetch_machine_stats(machine_id)
+
         async with self._lock:
             if machine_id not in self._machine_status:
                 logger.warning("Status update for unknown machine: %d", machine_id)
@@ -218,6 +269,12 @@ class StatusHub:
                 status.upload_speed = upload_speed
             if download_speed is not None:
                 status.download_speed = download_speed
+
+            # Update stats if we refreshed them
+            if refresh_stats:
+                status.file_count = file_count
+                status.total_size = total_size
+
             status.last_update = datetime.now(UTC)
 
         # Broadcast updated status
@@ -372,6 +429,9 @@ async def websocket_client(websocket: WebSocket, token: str) -> None:
     # Get database from app state
     db: Database = websocket.app.state.db
     hub = get_hub()
+
+    # Set database on hub for stats fetching
+    hub.set_db(db)
 
     # Validate token
     auth_token = db.validate_token(token)

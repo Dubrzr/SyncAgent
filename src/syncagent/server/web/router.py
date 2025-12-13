@@ -582,6 +582,32 @@ async def trash_page(
     )
 
 
+@router.post("/files/{path:path}/delete")
+async def delete_file_web(
+    request: Request,
+    path: str,
+    admin: Annotated[tuple[str, str], Depends(get_current_admin)],
+) -> Response:
+    """Soft-delete a file (move to trash) from web UI."""
+    from urllib.parse import unquote
+
+    db = get_db(request)
+    # Decode URL-encoded path
+    decoded_path = unquote(path)
+    db.delete_file(decoded_path, machine_id=None)  # Admin delete, no machine_id
+
+    # Check if this is an HTMX request
+    if request.headers.get("HX-Request"):
+        # Return empty response to remove the row
+        return Response(content="", status_code=200)
+
+    # Regular form submission - redirect to current folder
+    parent_path = "/".join(decoded_path.split("/")[:-1])
+    if parent_path:
+        return RedirectResponse(url=f"/?path={parent_path}", status_code=303)
+    return RedirectResponse(url="/", status_code=303)
+
+
 @router.post("/trash/{file_id}/restore")
 async def restore_file(
     request: Request,

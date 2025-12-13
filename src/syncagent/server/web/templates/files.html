@@ -173,10 +173,11 @@
                         </span>
                     </td>
                     <td class="px-6 py-4 text-right">
-                        <form action="/api/files/{{ item.path | urlencode }}" method="POST"
-                              hx-delete="/api/files/{{ item.path | urlencode }}"
+                        <form action="/files/{{ item.path | urlencode }}/delete" method="POST"
+                              hx-post="/files/{{ item.path | urlencode }}/delete"
                               hx-confirm="Are you sure you want to delete this file?"
-                              hx-swap="outerHTML swap:1s"
+                              hx-target="closest tr"
+                              hx-swap="outerHTML swap:0.5s"
                               class="inline">
                             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                             <button type="submit"
