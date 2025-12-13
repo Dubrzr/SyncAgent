@@ -344,8 +344,9 @@ class SyncCoordinator:
             )
             self._stats.conflicts_detected += 1
 
-            if self._on_conflict and existing.event:
-                self._on_conflict(new_event.path, existing.event, new_event)
+            conflict_callback = self._on_conflict
+            if conflict_callback is not None and existing.event is not None:
+                conflict_callback(new_event.path, existing.event, new_event)
 
         elif action == DecisionAction.CREATE_CONFLICT_COPY:
             # Server deleted while we're uploading - mark conflict and continue
