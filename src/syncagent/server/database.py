@@ -426,30 +426,32 @@ class Database:
                 session.expunge(file)
             return files
 
-    def delete_file(self, path: str, machine_id: int) -> None:
+    def delete_file(self, path: str, machine_id: int | None) -> None:
         """Soft-delete a file (move to trash).
 
         Args:
             path: File path.
-            machine_id: ID of machine deleting.
+            machine_id: ID of machine deleting (None for admin deletions).
         """
         with self._session() as session:
             stmt = select(FileMetadata).where(FileMetadata.path == path)
             file = session.execute(stmt).scalar_one_or_none()
             if file:
                 file.deleted_at = datetime.now(UTC)
-                file.updated_by = machine_id
                 file.version += 1
 
-                # Log change
-                change = ChangeLog(
-                    file_id=file.id,
-                    file_path=path,
-                    action="DELETED",
-                    version=file.version,
-                    machine_id=machine_id,
-                )
-                session.add(change)
+                # Only update updated_by and log change if machine_id provided
+                # (admin deletions via web UI don't have a machine_id)
+                if machine_id is not None:
+                    file.updated_by = machine_id
+                    change = ChangeLog(
+                        file_id=file.id,
+                        file_path=path,
+                        action="DELETED",
+                        version=file.version,
+                        machine_id=machine_id,
+                    )
+                    session.add(change)
 
                 session.commit()
 
