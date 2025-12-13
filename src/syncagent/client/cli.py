@@ -663,22 +663,28 @@ def sync(watch: bool, no_progress: bool) -> None:
                     on_error=on_error,
                 )
 
-                # Report progress with active counts
+                # Report progress with active counts and speeds
                 status_reporter.update_status(StatusUpdate(
                     state=SyncStateEnum.SYNCING,
-                    files_pending=len(queue),
-                    uploads_in_progress=len(uploaded),
-                    downloads_in_progress=len(downloaded),
+                    files_pending=len(queue) + pool.queue_size,
+                    uploads_in_progress=pool.active_uploads,
+                    downloads_in_progress=pool.active_downloads,
+                    upload_speed=pool.upload_speed,
+                    download_speed=pool.download_speed,
                 ))
 
             # Wait for all tasks to complete
             import time
             while pool.active_count > 0:
                 time.sleep(0.1)
-                # Keep reporting during wait
+                # Keep reporting during wait with speeds
                 status_reporter.update_status(StatusUpdate(
                     state=SyncStateEnum.SYNCING,
-                    files_pending=pool.active_count,
+                    files_pending=pool.active_count + pool.queue_size,
+                    uploads_in_progress=pool.active_uploads,
+                    downloads_in_progress=pool.active_downloads,
+                    upload_speed=pool.upload_speed,
+                    download_speed=pool.download_speed,
                 ))
 
             pool.stop()

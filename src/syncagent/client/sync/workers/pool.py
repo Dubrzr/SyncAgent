@@ -11,6 +11,7 @@ import logging
 import os
 import queue
 import threading
+import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
@@ -120,6 +121,15 @@ class WorkerPool:
         self._completed_count = 0
         self._error_count = 0
 
+        # Speed tracking
+        self._upload_bytes: list[tuple[float, int]] = []  # (timestamp, bytes)
+        self._download_bytes: list[tuple[float, int]] = []
+        self._speed_window = 5.0  # Calculate speed over 5 seconds
+
+        # Active transfer counts
+        self._active_uploads = 0
+        self._active_downloads = 0
+
     @property
     def state(self) -> PoolState:
         """Get current pool state."""
@@ -145,6 +155,71 @@ class WorkerPool:
     def error_count(self) -> int:
         """Get number of failed tasks."""
         return self._error_count
+
+    @property
+    def active_uploads(self) -> int:
+        """Get number of active upload tasks."""
+        with self._lock:
+            return self._active_uploads
+
+    @property
+    def active_downloads(self) -> int:
+        """Get number of active download tasks."""
+        with self._lock:
+            return self._active_downloads
+
+    @property
+    def upload_speed(self) -> int:
+        """Get current upload speed in bytes/sec."""
+        return self._calculate_speed(self._upload_bytes)
+
+    @property
+    def download_speed(self) -> int:
+        """Get current download speed in bytes/sec."""
+        return self._calculate_speed(self._download_bytes)
+
+    def _calculate_speed(self, samples: list[tuple[float, int]]) -> int:
+        """Calculate speed from byte samples.
+
+        Args:
+            samples: List of (timestamp, bytes) tuples.
+
+        Returns:
+            Speed in bytes/sec.
+        """
+        now = time.monotonic()
+        cutoff = now - self._speed_window
+
+        with self._lock:
+            # Remove old samples
+            while samples and samples[0][0] < cutoff:
+                samples.pop(0)
+
+            if len(samples) < 2:
+                return 0
+
+            # Calculate bytes transferred in window
+            total_bytes = sum(b for _, b in samples)
+            elapsed = samples[-1][0] - samples[0][0]
+
+            if elapsed <= 0:
+                return 0
+
+            return int(total_bytes / elapsed)
+
+    def _record_bytes(self, transfer_type: TransferType, byte_count: int) -> None:
+        """Record bytes transferred for speed calculation.
+
+        Args:
+            transfer_type: Type of transfer (UPLOAD or DOWNLOAD).
+            byte_count: Number of bytes transferred.
+        """
+        now = time.monotonic()
+        with self._lock:
+            if transfer_type == TransferType.UPLOAD:
+                self._upload_bytes.append((now, byte_count))
+            elif transfer_type == TransferType.DOWNLOAD:
+                self._download_bytes.append((now, byte_count))
 
     def start(self) -> None:
         """Start the worker pool."""
@@ -275,19 +350,39 @@ class WorkerPool:
             task: The task to process.
         """
         path = task.event.path
+        transfer_type = task.transfer_type
 
-        # Register as active
+        # Register as active and track upload/download counts
         with self._lock:
             self._active_tasks[path] = task
+            if transfer_type == TransferType.UPLOAD:
+                self._active_uploads += 1
+            elif transfer_type == TransferType.DOWNLOAD:
+                self._active_downloads += 1
+
+        # Track last progress for delta calculation
+        last_bytes = [0]  # Use list to allow mutation in closure
+
+        def progress_wrapper(current: int, total: int) -> None:
+            """Wrap progress callback to record bytes for speed calculation."""
+            # Calculate delta since last progress update
+            delta = current - last_bytes[0]
+            if delta > 0:
+                self._record_bytes(transfer_type, delta)
+                last_bytes[0] = current
+
+            # Call original callback if provided
+            if task.on_progress:
+                task.on_progress(current, total)
 
         try:
             # Create appropriate worker
-            worker = self._create_worker(task.transfer_type)
+            worker = self._create_worker(transfer_type)
 
-            # Execute
+            # Execute with wrapped progress callback
             success = worker.execute(
                 event=task.event,
-                on_progress=task.on_progress,
+                on_progress=progress_wrapper,
                 cancel_check=lambda: task.cancel_requested,
             )
 
@@ -309,9 +404,13 @@ class WorkerPool:
                 task.on_error(str(e))
 
         finally:
-            # Unregister from active
+            # Unregister from active and update counts
             with self._lock:
                 self._active_tasks.pop(path, None)
+                if transfer_type == TransferType.UPLOAD:
+                    self._active_uploads -= 1
+                elif transfer_type == TransferType.DOWNLOAD:
+                    self._active_downloads -= 1
 
     def _create_worker(self, transfer_type: TransferType) -> BaseWorker:
         """Create a worker for the given transfer type.
