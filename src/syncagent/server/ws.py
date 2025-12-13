@@ -238,16 +238,34 @@ class StatusHub:
             upload_speed: Upload speed in bytes/second.
             download_speed: Download speed in bytes/second.
         """
-        # Check if state is changing to idle (sync completed)
-        # If so, refresh file stats from database
+        # Check if we should refresh file stats from database
+        # Refresh when: state changes to IDLE, or a transfer just completed
         refresh_stats = False
         async with self._lock:
             if machine_id in self._machine_status:
-                old_state = self._machine_status[machine_id].state
+                status = self._machine_status[machine_id]
+                old_state = status.state
+
+                # Refresh on state change to IDLE (sync completed)
                 if state == SyncState.IDLE and old_state != SyncState.IDLE:
                     refresh_stats = True
 
+                # Refresh when uploads decrease (upload just completed)
+                if (
+                    uploads_in_progress is not None
+                    and uploads_in_progress < status.uploads_in_progress
+                ):
+                    refresh_stats = True
+
+                # Refresh when downloads decrease (download just completed)
+                if (
+                    downloads_in_progress is not None
+                    and downloads_in_progress < status.downloads_in_progress
+                ):
+                    refresh_stats = True
+
         # Fetch stats outside the lock if needed
+        file_count, total_size = 0, 0
         if refresh_stats:
             file_count, total_size = self._fetch_machine_stats(machine_id)
 
