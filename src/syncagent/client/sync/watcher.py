@@ -124,6 +124,18 @@ class DebouncedEventHandler(FileSystemEventHandler):
         if change.is_directory:
             return
 
+        # Handle MOVED events specially - emit DELETE for old path, CREATE for new
+        if change.change_type == ChangeType.MOVED and change.dest_path:
+            # Emit DELETE for old path
+            self._emit_single_event(
+                change.path, SyncEventType.LOCAL_DELETED, change.timestamp
+            )
+            # Emit CREATE for new path
+            self._emit_single_event(
+                change.dest_path, SyncEventType.LOCAL_CREATED, change.timestamp
+            )
+            return
+
         # Convert ChangeType to SyncEventType
         type_mapping = {
             ChangeType.CREATED: SyncEventType.LOCAL_CREATED,
@@ -132,13 +144,19 @@ class DebouncedEventHandler(FileSystemEventHandler):
         }
         event_type = type_mapping.get(change.change_type, SyncEventType.LOCAL_MODIFIED)
 
+        self._emit_single_event(change.path, event_type, change.timestamp)
+
+    def _emit_single_event(
+        self, path: Path, event_type: SyncEventType, timestamp: float
+    ) -> None:
+        """Emit a single sync event for a path."""
         # Compute relative path
         try:
-            rel_path = change.path.relative_to(self._base_path)
+            rel_path = path.relative_to(self._base_path)
         except ValueError:
             logger.warning(
                 "Path %s is not relative to %s",
-                change.path,
+                path,
                 self._base_path,
             )
             return
@@ -149,13 +167,13 @@ class DebouncedEventHandler(FileSystemEventHandler):
         # Build metadata with mtime/size for deduplication
         # For DELETED events, the file doesn't exist so we can't get stats
         metadata: dict[str, str | int | float] = {
-            "absolute_path": str(change.path),
-            "timestamp": change.timestamp,
+            "absolute_path": str(path),
+            "timestamp": timestamp,
         }
 
-        if change.change_type != ChangeType.DELETED and change.path.exists():
+        if event_type != SyncEventType.LOCAL_DELETED and path.exists():
             try:
-                stat = change.path.stat()
+                stat = path.stat()
                 metadata["mtime"] = stat.st_mtime
                 metadata["size"] = stat.st_size
             except OSError:
