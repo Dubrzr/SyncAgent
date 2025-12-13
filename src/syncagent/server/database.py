@@ -51,6 +51,10 @@ class ConflictError(Exception):
     """Raised when a conflict is detected during file update."""
 
 
+# Reserved machine name for server/admin operations
+SERVER_MACHINE_NAME = "server"
+
+
 class Database:
     """SQLAlchemy database for server metadata.
 
@@ -168,6 +172,28 @@ class Database:
             if machine:
                 machine.last_seen = datetime.now(UTC)
                 session.commit()
+
+    def get_or_create_server_machine(self) -> Machine:
+        """Get or create the reserved 'server' machine for admin operations.
+
+        This machine is used for operations performed by the server/admin
+        (e.g., deleting files from web UI) rather than by a client.
+
+        Returns:
+            The server machine.
+        """
+        machine = self.get_machine_by_name(SERVER_MACHINE_NAME)
+        if machine:
+            return machine
+
+        # Create the server machine
+        with self._session() as session:
+            machine = Machine(name=SERVER_MACHINE_NAME, platform="server")
+            session.add(machine)
+            session.commit()
+            session.refresh(machine)
+            session.expunge(machine)
+            return machine
 
     def delete_machine(self, machine_id: int) -> bool:
         """Delete a machine and its associated data.
@@ -431,8 +457,14 @@ class Database:
 
         Args:
             path: File path.
-            machine_id: ID of machine deleting (None for admin deletions).
+            machine_id: ID of machine deleting (None uses 'server' machine).
         """
+        # Use server machine for admin deletions
+        actual_machine_id = machine_id
+        if actual_machine_id is None:
+            server_machine = self.get_or_create_server_machine()
+            actual_machine_id = server_machine.id
+
         with self._session() as session:
             stmt = select(FileMetadata).where(FileMetadata.path == path)
             file = session.execute(stmt).scalar_one_or_none()
@@ -440,18 +472,19 @@ class Database:
                 file.deleted_at = datetime.now(UTC)
                 file.version += 1
 
-                # Only update updated_by and log change if machine_id provided
-                # (admin deletions via web UI don't have a machine_id)
+                # Update updated_by if original machine_id was provided
                 if machine_id is not None:
                     file.updated_by = machine_id
-                    change = ChangeLog(
-                        file_id=file.id,
-                        file_path=path,
-                        action="DELETED",
-                        version=file.version,
-                        machine_id=machine_id,
-                    )
-                    session.add(change)
+
+                # Always log change (uses server machine for admin deletions)
+                change = ChangeLog(
+                    file_id=file.id,
+                    file_path=path,
+                    action="DELETED",
+                    version=file.version,
+                    machine_id=actual_machine_id,
+                )
+                session.add(change)
 
                 session.commit()
 

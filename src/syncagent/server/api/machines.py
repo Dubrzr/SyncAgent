@@ -5,7 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from syncagent.server.api.deps import get_current_token, get_db
-from syncagent.server.database import Database
+from syncagent.server.database import SERVER_MACHINE_NAME, Database
 from syncagent.server.models import Token
 from syncagent.server.schemas import (
     MachineRegisterRequest,
@@ -33,6 +33,13 @@ def register_machine(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired invitation token",
+        )
+
+    # Reject reserved machine name
+    if request.name.lower() == SERVER_MACHINE_NAME:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Machine name '{SERVER_MACHINE_NAME}' is reserved",
         )
 
     # Create machine
