@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from syncagent.client.api import ConflictError, NotFoundError, ServerFile, SyncClient
-from syncagent.client.state import FileStatus, SyncState
+from syncagent.client.api import ConflictError, HTTPClient, NotFoundError, ServerFile
+from syncagent.client.state import FileStatus, LocalSyncState
 from syncagent.client.sync import (
     ChangeScanner,
     DownloadError,
@@ -31,14 +31,14 @@ def encryption_key() -> bytes:
 
 @pytest.fixture
 def mock_client() -> MagicMock:
-    """Create a mock SyncClient."""
-    return MagicMock(spec=SyncClient)
+    """Create a mock HTTPClient."""
+    return MagicMock(spec=HTTPClient)
 
 
 @pytest.fixture
-def sync_state(tmp_path: Path) -> SyncState:
-    """Create a SyncState instance."""
-    state = SyncState(tmp_path / "state.db")
+def sync_state(tmp_path: Path) -> LocalSyncState:
+    """Create a LocalSyncState instance."""
+    state = LocalSyncState(tmp_path / "state.db")
     yield state
     state.close()
 
@@ -278,7 +278,7 @@ class TestFileDownloader:
 class TestChangeScanner:
     """Tests for ChangeScanner (event-based scanner).
 
-    ChangeScanner scans for changes and pushes SyncEvent objects to the queue.
+    ChangeScanner scans for changes and emit_events pushes SyncEvent objects to the queue.
     Actual sync work is done by Workers via the Coordinator.
     """
 
@@ -286,10 +286,10 @@ class TestChangeScanner:
         self,
         tmp_path: Path,
         mock_client: MagicMock,
-        sync_state: SyncState,
+        sync_state: LocalSyncState,
     ) -> None:
         """Should push LOCAL_CREATED events for new files."""
-        from syncagent.client.sync import EventQueue, SyncEventType
+        from syncagent.client.sync import EventQueue, SyncEventType, emit_events
 
         base_path = tmp_path / "sync"
         base_path.mkdir()
@@ -301,8 +301,10 @@ class TestChangeScanner:
         mock_client.list_files.return_value = []
 
         queue = EventQueue()
-        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
-        result = engine.scan()
+        scanner = ChangeScanner(mock_client, sync_state, base_path)
+        remote = scanner.fetch_remote_changes()
+        local = scanner.scan_local_changes()
+        result = emit_events(queue, local, remote)
 
         assert "new.txt" in result.uploaded
 
@@ -316,12 +318,12 @@ class TestChangeScanner:
         self,
         tmp_path: Path,
         mock_client: MagicMock,
-        sync_state: SyncState,
+        sync_state: LocalSyncState,
     ) -> None:
         """Should push LOCAL_MODIFIED events for modified files."""
         import time
 
-        from syncagent.client.sync import EventQueue, SyncEventType
+        from syncagent.client.sync import EventQueue, SyncEventType, emit_events
 
         base_path = tmp_path / "sync"
         base_path.mkdir()
@@ -345,8 +347,10 @@ class TestChangeScanner:
         mock_client.list_files.return_value = []
 
         queue = EventQueue()
-        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
-        result = engine.scan()
+        scanner = ChangeScanner(mock_client, sync_state, base_path)
+        remote = scanner.fetch_remote_changes()
+        local = scanner.scan_local_changes()
+        result = emit_events(queue, local, remote)
 
         assert "existing.txt" in result.uploaded
 
@@ -359,10 +363,10 @@ class TestChangeScanner:
         self,
         tmp_path: Path,
         mock_client: MagicMock,
-        sync_state: SyncState,
+        sync_state: LocalSyncState,
     ) -> None:
         """Should push LOCAL_DELETED events for deleted files."""
-        from syncagent.client.sync import EventQueue, SyncEventType
+        from syncagent.client.sync import EventQueue, SyncEventType, emit_events
 
         base_path = tmp_path / "sync"
         base_path.mkdir()
@@ -374,8 +378,10 @@ class TestChangeScanner:
         mock_client.list_files.return_value = []
 
         queue = EventQueue()
-        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
-        result = engine.scan()
+        scanner = ChangeScanner(mock_client, sync_state, base_path)
+        remote = scanner.fetch_remote_changes()
+        local = scanner.scan_local_changes()
+        result = emit_events(queue, local, remote)
 
         assert "deleted.txt" in result.deleted
 
@@ -388,10 +394,10 @@ class TestChangeScanner:
         self,
         tmp_path: Path,
         mock_client: MagicMock,
-        sync_state: SyncState,
+        sync_state: LocalSyncState,
     ) -> None:
         """Should push REMOTE_CREATED events for new server files."""
-        from syncagent.client.sync import EventQueue, SyncEventType
+        from syncagent.client.sync import EventQueue, SyncEventType, emit_events
 
         base_path = tmp_path / "sync"
         base_path.mkdir()
@@ -405,8 +411,10 @@ class TestChangeScanner:
         mock_client.list_files.return_value = [server_file]
 
         queue = EventQueue()
-        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
-        result = engine.scan()
+        scanner = ChangeScanner(mock_client, sync_state, base_path)
+        remote = scanner.fetch_remote_changes()
+        local = scanner.scan_local_changes()
+        result = emit_events(queue, local, remote)
 
         assert "remote.txt" in result.downloaded
 
@@ -419,10 +427,10 @@ class TestChangeScanner:
         self,
         tmp_path: Path,
         mock_client: MagicMock,
-        sync_state: SyncState,
+        sync_state: LocalSyncState,
     ) -> None:
         """Should push REMOTE_MODIFIED events for modified server files."""
-        from syncagent.client.sync import EventQueue, SyncEventType
+        from syncagent.client.sync import EventQueue, SyncEventType, emit_events
 
         base_path = tmp_path / "sync"
         base_path.mkdir()
@@ -440,8 +448,10 @@ class TestChangeScanner:
         mock_client.list_files.return_value = [server_file]
 
         queue = EventQueue()
-        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
-        result = engine.scan()
+        scanner = ChangeScanner(mock_client, sync_state, base_path)
+        remote = scanner.fetch_remote_changes()
+        local = scanner.scan_local_changes()
+        result = emit_events(queue, local, remote)
 
         assert "remote.txt" in result.downloaded
 
@@ -454,10 +464,10 @@ class TestChangeScanner:
         self,
         tmp_path: Path,
         mock_client: MagicMock,
-        sync_state: SyncState,
+        sync_state: LocalSyncState,
     ) -> None:
         """Should not push events for files already in sync."""
-        from syncagent.client.sync import EventQueue
+        from syncagent.client.sync import EventQueue, emit_events
 
         base_path = tmp_path / "sync"
         base_path.mkdir()
@@ -484,8 +494,10 @@ class TestChangeScanner:
         mock_client.list_files.return_value = [server_file]
 
         queue = EventQueue()
-        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
-        result = engine.scan()
+        scanner = ChangeScanner(mock_client, sync_state, base_path)
+        remote = scanner.fetch_remote_changes()
+        local = scanner.scan_local_changes()
+        result = emit_events(queue, local, remote)
 
         assert "synced.txt" not in result.uploaded
         assert "synced.txt" not in result.downloaded
@@ -498,10 +510,10 @@ class TestChangeScanner:
         self,
         tmp_path: Path,
         mock_client: MagicMock,
-        sync_state: SyncState,
+        sync_state: LocalSyncState,
     ) -> None:
         """Should not push REMOTE events when local has pending changes."""
-        from syncagent.client.sync import EventQueue, SyncEventType
+        from syncagent.client.sync import EventQueue, SyncEventType, emit_events
 
         base_path = tmp_path / "sync"
         base_path.mkdir()
@@ -523,8 +535,10 @@ class TestChangeScanner:
         mock_client.list_files.return_value = [server_file]
 
         queue = EventQueue()
-        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
-        result = engine.scan()
+        scanner = ChangeScanner(mock_client, sync_state, base_path)
+        remote = scanner.fetch_remote_changes()
+        local = scanner.scan_local_changes()
+        result = emit_events(queue, local, remote)
 
         # Should queue local upload, not remote download
         assert "changed.txt" in result.uploaded
@@ -543,10 +557,10 @@ class TestChangeScanner:
         self,
         tmp_path: Path,
         mock_client: MagicMock,
-        sync_state: SyncState,
+        sync_state: LocalSyncState,
     ) -> None:
         """Should include files already marked as NEW or MODIFIED."""
-        from syncagent.client.sync import EventQueue
+        from syncagent.client.sync import EventQueue, emit_events
 
         base_path = tmp_path / "sync"
         base_path.mkdir()
@@ -559,8 +573,10 @@ class TestChangeScanner:
         mock_client.list_files.return_value = []
 
         queue = EventQueue()
-        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
-        result = engine.scan()
+        scanner = ChangeScanner(mock_client, sync_state, base_path)
+        remote = scanner.fetch_remote_changes()
+        local = scanner.scan_local_changes()
+        result = emit_events(queue, local, remote)
 
         assert "pending.txt" in result.uploaded
 
@@ -568,10 +584,10 @@ class TestChangeScanner:
         self,
         tmp_path: Path,
         mock_client: MagicMock,
-        sync_state: SyncState,
+        sync_state: LocalSyncState,
     ) -> None:
         """Should ignore files matching .syncignore patterns."""
-        from syncagent.client.sync import EventQueue
+        from syncagent.client.sync import EventQueue, emit_events
 
         base_path = tmp_path / "sync"
         base_path.mkdir()
@@ -586,8 +602,10 @@ class TestChangeScanner:
         mock_client.list_files.return_value = []
 
         queue = EventQueue()
-        engine = ChangeScanner(mock_client, sync_state, base_path, queue)
-        result = engine.scan()
+        scanner = ChangeScanner(mock_client, sync_state, base_path)
+        remote = scanner.fetch_remote_changes()
+        local = scanner.scan_local_changes()
+        result = emit_events(queue, local, remote)
 
         assert "good.txt" in result.uploaded
         assert "debug.log" not in result.uploaded
@@ -851,7 +869,7 @@ class TestResumableUpload:
         tmp_path: Path,
         mock_client: MagicMock,
         encryption_key: bytes,
-        sync_state: SyncState,
+        sync_state: LocalSyncState,
     ) -> None:
         """Should track upload progress when state provided."""
         test_file = tmp_path / "test.txt"
@@ -875,7 +893,7 @@ class TestResumableUpload:
         tmp_path: Path,
         mock_client: MagicMock,
         encryption_key: bytes,
-        sync_state: SyncState,
+        sync_state: LocalSyncState,
     ) -> None:
         """Should resume upload from tracked progress."""
         from syncagent.core.chunking import chunk_file
@@ -910,7 +928,7 @@ class TestResumableUpload:
         tmp_path: Path,
         mock_client: MagicMock,
         encryption_key: bytes,
-        sync_state: SyncState,
+        sync_state: LocalSyncState,
     ) -> None:
         """Should restart upload if file content changed."""
         test_file = tmp_path / "test.txt"

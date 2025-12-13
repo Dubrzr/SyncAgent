@@ -1,19 +1,20 @@
 """Change scanner for detecting local and remote changes.
 
 This module provides:
-- ChangeScanner: Scans local/remote for changes and pushes events to EventQueue
+- ChangeScanner: Detects local/remote file changes
+- emit_events(): Emits sync events to a queue based on detected changes
 
 Architecture:
-    ChangeScanner is an "event producer" that:
-    1. Fetches remote changes via /api/changes (incremental) or list_files (fallback)
-    2. Scans local filesystem for new/modified/deleted files
-    3. Pushes SyncEvent objects to EventQueue
+    ChangeScanner detects changes, emit_events() pushes them to the queue:
+    1. Fetch remote changes via /api/changes (incremental) or list_files (fallback)
+    2. Scan local filesystem for new/modified/deleted files
+    3. Emit SyncEvent objects to EventQueue
 
     The actual sync work (upload/download/delete) is handled by:
     - SyncCoordinator: Processes events from the queue
     - Workers: Execute the transfers (UploadWorker, DownloadWorker, DeleteWorker)
 
-    Flow: ChangeScanner → EventQueue → SyncCoordinator → Workers
+    Flow: ChangeScanner → emit_events() → EventQueue → SyncCoordinator → Workers
 
 Usage with network resilience:
     # Fetch remote state first (with retry on network errors)
@@ -27,8 +28,8 @@ Usage with network resilience:
     # Then scan local (no network needed)
     local_changes = scanner.scan_local_changes()
 
-    # Finally emit events
-    scanner.emit_events(local_changes, remote_changes)
+    # Finally emit events to queue
+    emit_events(queue, local_changes, remote_changes)
 """
 
 from __future__ import annotations
@@ -50,9 +51,10 @@ from syncagent.client.sync.types import (
 )
 
 if TYPE_CHECKING:
-    from syncagent.client.api import SyncClient
-    from syncagent.client.state import SyncState
-    from syncagent.client.sync.queue import EventQueue
+    from syncagent.client.api import HTTPClient
+    from syncagent.client.state import LocalSyncState
+
+from syncagent.client.sync.queue import EventQueue
 
 logger = logging.getLogger(__name__)
 
@@ -78,49 +80,111 @@ class RemoteChanges:
     deleted: list[str]
 
 
+def emit_events(
+    queue: EventQueue,
+    local_changes: LocalChanges,
+    remote_changes: RemoteChanges,
+) -> SyncResult:
+    """Emit sync events to a queue based on detected changes.
+
+    Args:
+        queue: Event queue to push events to.
+        local_changes: Changes detected locally.
+        remote_changes: Changes detected remotely.
+
+    Returns:
+        SyncResult summarizing what was queued.
+    """
+    # Push local events to queue
+    for path in local_changes.created:
+        event = SyncEvent.create(
+            event_type=SyncEventType.LOCAL_CREATED,
+            path=path,
+            source=SyncEventSource.LOCAL,
+        )
+        queue.put(event)
+        logger.debug(f"Queued LOCAL_CREATED: {path}")
+
+    for path in local_changes.modified:
+        event = SyncEvent.create(
+            event_type=SyncEventType.LOCAL_MODIFIED,
+            path=path,
+            source=SyncEventSource.LOCAL,
+        )
+        queue.put(event)
+        logger.debug(f"Queued LOCAL_MODIFIED: {path}")
+
+    for path in local_changes.deleted:
+        event = SyncEvent.create(
+            event_type=SyncEventType.LOCAL_DELETED,
+            path=path,
+            source=SyncEventSource.LOCAL,
+        )
+        queue.put(event)
+        logger.debug(f"Queued LOCAL_DELETED: {path}")
+
+    # Push remote events to queue
+    for path in remote_changes.created:
+        event = SyncEvent.create(
+            event_type=SyncEventType.REMOTE_CREATED,
+            path=path,
+            source=SyncEventSource.REMOTE,
+        )
+        queue.put(event)
+        logger.debug(f"Queued REMOTE_CREATED: {path}")
+
+    for path in remote_changes.modified:
+        event = SyncEvent.create(
+            event_type=SyncEventType.REMOTE_MODIFIED,
+            path=path,
+            source=SyncEventSource.REMOTE,
+        )
+        queue.put(event)
+        logger.debug(f"Queued REMOTE_MODIFIED: {path}")
+
+    for path in remote_changes.deleted:
+        event = SyncEvent.create(
+            event_type=SyncEventType.REMOTE_DELETED,
+            path=path,
+            source=SyncEventSource.REMOTE,
+        )
+        queue.put(event)
+        logger.debug(f"Queued REMOTE_DELETED: {path}")
+
+    # Return summary of what was queued
+    return SyncResult(
+        uploaded=local_changes.created + local_changes.modified,
+        downloaded=remote_changes.created + remote_changes.modified,
+        deleted=local_changes.deleted,
+        conflicts=[],
+        errors=[],
+    )
+
+
 class ChangeScanner:
-    """Scans for local and remote changes and pushes events to the sync queue.
+    """Detects local and remote file changes.
 
     This class is responsible for:
     - Fetching remote changes from server (via /api/changes or list_files)
     - Scanning the local filesystem for changes
-    - Producing SyncEvent objects for the coordinator to process
-
-    Usage (simple):
-        queue = EventQueue()
-        scanner = ChangeScanner(client, state, base_path, queue)
-        result = scanner.scan()  # Does everything
-
-    Usage (with network resilience):
-        # Step 1: Fetch remote (can fail with network errors)
-        remote = scanner.fetch_remote_changes()
-
-        # Step 2: Scan local (no network, won't fail)
-        local = scanner.scan_local_changes()
-
-        # Step 3: Emit events to queue
-        scanner.emit_events(local, remote)
     """
 
     def __init__(
         self,
-        client: SyncClient,
-        state: SyncState,
+        http_client: HTTPClient,
+        local_state: LocalSyncState,
         base_path: Path,
-        queue: EventQueue,
     ) -> None:
         """Initialize the change scanner.
 
         Args:
-            client: HTTP client for server communication.
-            state: Local state database.
+            http_client: HTTP client for server communication.
+            local_state: Local state database.
             base_path: Base directory for synced files.
-            queue: Event queue to push events to.
         """
-        self._client = client
-        self._state = state
+        self._client = http_client
+        self._state = local_state
         self._base_path = Path(base_path).resolve()
-        self._queue = queue
 
     def fetch_remote_changes(self) -> RemoteChanges:
         """Fetch changes from the remote server.
@@ -316,129 +380,3 @@ class ChangeScanner:
                 deleted.append(local_file.path)
 
         return LocalChanges(created=created, modified=modified, deleted=deleted)
-
-    def emit_events(
-        self,
-        local_changes: LocalChanges,
-        remote_changes: RemoteChanges,
-    ) -> SyncResult:
-        """Emit sync events to the queue based on detected changes.
-
-        Args:
-            local_changes: Changes detected locally.
-            remote_changes: Changes detected remotely.
-
-        Returns:
-            SyncResult summarizing what was queued.
-        """
-        # Push local events to queue
-        for path in local_changes.created:
-            event = SyncEvent.create(
-                event_type=SyncEventType.LOCAL_CREATED,
-                path=path,
-                source=SyncEventSource.LOCAL,
-            )
-            self._queue.put(event)
-            logger.debug(f"Queued LOCAL_CREATED: {path}")
-
-        for path in local_changes.modified:
-            event = SyncEvent.create(
-                event_type=SyncEventType.LOCAL_MODIFIED,
-                path=path,
-                source=SyncEventSource.LOCAL,
-            )
-            self._queue.put(event)
-            logger.debug(f"Queued LOCAL_MODIFIED: {path}")
-
-        for path in local_changes.deleted:
-            event = SyncEvent.create(
-                event_type=SyncEventType.LOCAL_DELETED,
-                path=path,
-                source=SyncEventSource.LOCAL,
-            )
-            self._queue.put(event)
-            logger.debug(f"Queued LOCAL_DELETED: {path}")
-
-        # Push remote events to queue
-        for path in remote_changes.created:
-            event = SyncEvent.create(
-                event_type=SyncEventType.REMOTE_CREATED,
-                path=path,
-                source=SyncEventSource.REMOTE,
-            )
-            self._queue.put(event)
-            logger.debug(f"Queued REMOTE_CREATED: {path}")
-
-        for path in remote_changes.modified:
-            event = SyncEvent.create(
-                event_type=SyncEventType.REMOTE_MODIFIED,
-                path=path,
-                source=SyncEventSource.REMOTE,
-            )
-            self._queue.put(event)
-            logger.debug(f"Queued REMOTE_MODIFIED: {path}")
-
-        for path in remote_changes.deleted:
-            event = SyncEvent.create(
-                event_type=SyncEventType.REMOTE_DELETED,
-                path=path,
-                source=SyncEventSource.REMOTE,
-            )
-            self._queue.put(event)
-            logger.debug(f"Queued REMOTE_DELETED: {path}")
-
-        # Return summary of what was queued
-        return SyncResult(
-            uploaded=local_changes.created + local_changes.modified,
-            downloaded=remote_changes.created + remote_changes.modified,
-            deleted=local_changes.deleted,
-            conflicts=[],
-            errors=[],
-        )
-
-    def scan(self) -> SyncResult:
-        """Scan for changes and push events to the queue.
-
-        This is a convenience method that:
-        1. Fetches remote changes from server
-        2. Scans local filesystem for changes
-        3. Emits events to the queue
-
-        For network-resilient operation, use the individual methods:
-        fetch_remote_changes(), scan_local_changes(), emit_events()
-
-        Returns:
-            SyncResult with counts of events pushed (not completed transfers).
-        """
-        errors: list[str] = []
-
-        # 1. Fetch remote changes (can fail with network errors)
-        try:
-            remote_changes = self.fetch_remote_changes()
-        except Exception as e:
-            logger.error(f"Error fetching remote changes: {e}")
-            errors.append(f"Remote fetch error: {e}")
-            remote_changes = RemoteChanges(created=[], modified=[], deleted=[])
-
-        # 2. Scan local changes (no network, shouldn't fail)
-        try:
-            local_changes = self.scan_local_changes()
-        except Exception as e:
-            logger.error(f"Error scanning local changes: {e}")
-            errors.append(f"Local scan error: {e}")
-            local_changes = LocalChanges(created=[], modified=[], deleted=[])
-
-        # 3. Emit events
-        result = self.emit_events(local_changes, remote_changes)
-
-        # Add any errors to result
-        if errors:
-            return SyncResult(
-                uploaded=result.uploaded,
-                downloaded=result.downloaded,
-                deleted=result.deleted,
-                conflicts=result.conflicts,
-                errors=errors,
-            )
-
-        return result

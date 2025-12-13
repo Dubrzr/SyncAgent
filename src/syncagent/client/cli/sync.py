@@ -29,9 +29,9 @@ def sync(watch: bool, no_progress: bool) -> None:
     Uploads local changes and downloads remote changes.
     Use --watch to continuously monitor for changes.
     """
-    from syncagent.client.api import SyncClient
+    from syncagent.client.api import HTTPClient
     from syncagent.client.notifications import notify_conflict
-    from syncagent.client.state import SyncState
+    from syncagent.client.state import LocalSyncState
     from syncagent.client.status import StatusReporter, StatusUpdate
     from syncagent.client.sync import (
         NETWORK_EXCEPTIONS,
@@ -41,6 +41,7 @@ def sync(watch: bool, no_progress: bool) -> None:
         SyncEventType,
         TransferType,
         WorkerPool,
+        emit_events,
         wait_for_network,
     )
     from syncagent.core.config import ServerConfig
@@ -74,31 +75,27 @@ def sync(watch: bool, no_progress: bool) -> None:
         sync_folder.mkdir(parents=True)
         click.echo(f"Created sync folder: {sync_folder}")
 
-    # Initialize sync components
-    server_url = config["server_url"]
-    auth_token = config["auth_token"]
-
-    server_config = ServerConfig(server_url=server_url, token=auth_token)
-    client = SyncClient(server_config)
-    state_db = config_dir / "state.db"
-    state = SyncState(state_db)
+    server_config = ServerConfig(server_url=config["server_url"], token=config["auth_token"])
+    client = HTTPClient(server_config)
+    state_db_path = config_dir / "state.db"
+    local_state = LocalSyncState(state_db_path)
 
     # Create status reporter for real-time dashboard updates
     status_reporter = StatusReporter(server_config)
     status_reporter.start()
 
+    # Create scanner to detect changes
+    scanner = ChangeScanner(client, local_state, sync_folder)
+
     # Create event queue for sync events
     queue = EventQueue()
-
-    # Create scanner to detect changes
-    scanner = ChangeScanner(client, state, sync_folder, queue)
 
     # Create worker pool for concurrent transfers
     pool = WorkerPool(
         client=client,
         encryption_key=keystore.encryption_key,
         base_path=sync_folder,
-        state=state,
+        state=local_state,
     )
 
     # Track results
@@ -116,11 +113,17 @@ def sync(watch: bool, no_progress: bool) -> None:
         """Track errors."""
         errors.append(error_msg)
 
-    click.echo(f"Syncing with {server_url}...")
+    click.echo(f"Syncing with {config['server_url']}...")
     click.echo(f"Sync folder: {sync_folder}\n")
 
     def run_sync() -> None:
-        """Run a single sync operation."""
+        """Run a single sync operation.
+
+        Network errors during fetch are retried with wait_for_network.
+        Workers handle their own network retries internally.
+        """
+        import time
+
         nonlocal uploaded, downloaded, deleted, conflicts, errors
 
         # Reset counters
@@ -133,150 +136,129 @@ def sync(watch: bool, no_progress: bool) -> None:
         # Report syncing state
         status_reporter.update_status(StatusUpdate(state=SyncStateEnum.SYNCING))
 
-        try:
-            # Step 1: Fetch remote changes (with retry on network errors)
-            remote_changes: RemoteChanges | None = None
-            while remote_changes is None:
-                try:
-                    remote_changes = scanner.fetch_remote_changes()
-                except NETWORK_EXCEPTIONS as e:
-                    click.echo(f"Server unreachable: {e}")
-                    status_reporter.update_status(StatusUpdate(state=SyncStateEnum.OFFLINE))
-                    click.echo("Waiting for server to come back online...")
-                    wait_for_network(
-                        client,
-                        on_waiting=lambda: None,
-                        on_restored=lambda: click.echo("Server is back online!"),
-                    )
-                    status_reporter.update_status(StatusUpdate(state=SyncStateEnum.SYNCING))
-
-            # Step 2: Scan local changes (no network, won't fail)
-            local_changes = scanner.scan_local_changes()
-
-            # Step 3: Emit events to queue
-            scanner.emit_events(local_changes, remote_changes)
-
-            # Process events from queue
-            pool.start()
-
-            while True:
-                event = queue.get(timeout=0.1)
-                if event is None:
-                    # Queue is empty, check if pool is idle
-                    if pool.active_count == 0 and pool.queue_size == 0:
-                        break
-                    continue
-
-                # Determine transfer type
-                if event.event_type in (
-                    SyncEventType.LOCAL_CREATED,
-                    SyncEventType.LOCAL_MODIFIED,
-                ):
-                    transfer_type = TransferType.UPLOAD
-                    uploaded.append(event.path)
-                    arrow = "↑"
-                elif event.event_type in (
-                    SyncEventType.REMOTE_CREATED,
-                    SyncEventType.REMOTE_MODIFIED,
-                ):
-                    transfer_type = TransferType.DOWNLOAD
-                    downloaded.append(event.path)
-                    arrow = "↓"
-                elif event.event_type in (
-                    SyncEventType.LOCAL_DELETED,
-                    SyncEventType.REMOTE_DELETED,
-                ):
-                    transfer_type = TransferType.DELETE
-                    deleted.append(event.path)
-                    arrow = "✗"
-                else:
-                    continue
-
-                if not no_progress:
-                    click.echo(f"  {arrow} {event.path}")
-
-                # Submit to worker pool
-                pool.submit(
-                    event=event,
-                    transfer_type=transfer_type,
-                    on_complete=on_complete,
-                    on_error=on_error,
+        # Step 1: Fetch remote changes (with retry on network errors)
+        remote_changes: RemoteChanges | None = None
+        while remote_changes is None:
+            try:
+                remote_changes = scanner.fetch_remote_changes()
+            except NETWORK_EXCEPTIONS as e:
+                click.echo(f"Server unreachable: {e}")
+                status_reporter.update_status(StatusUpdate(state=SyncStateEnum.OFFLINE))
+                click.echo("Waiting for server to come back online...")
+                wait_for_network(
+                    client,
+                    on_waiting=lambda: None,
+                    on_restored=lambda: click.echo("Server is back online!"),
                 )
+                status_reporter.update_status(StatusUpdate(state=SyncStateEnum.SYNCING))
 
-                # Report progress with active counts and speeds
-                status_reporter.update_status(StatusUpdate(
-                    state=SyncStateEnum.SYNCING,
-                    files_pending=len(queue) + pool.queue_size,
-                    uploads_in_progress=pool.active_uploads,
-                    downloads_in_progress=pool.active_downloads,
-                    upload_speed=pool.upload_speed,
-                    download_speed=pool.download_speed,
-                ))
+        # Step 2: Scan local changes (no network, won't fail)
+        local_changes = scanner.scan_local_changes()
 
-            # Wait for all tasks to complete, updating status every 500ms
-            import time
-            while pool.active_count > 0 or pool.queue_size > 0:
-                time.sleep(0.5)
-                # Keep reporting during wait with speeds
-                status_reporter.update_status(StatusUpdate(
-                    state=SyncStateEnum.SYNCING,
-                    files_pending=pool.active_count + pool.queue_size,
-                    uploads_in_progress=pool.active_uploads,
-                    downloads_in_progress=pool.active_downloads,
-                    upload_speed=pool.upload_speed,
-                    download_speed=pool.download_speed,
-                ))
+        # Step 3: Emit events to queue
+        emit_events(queue, local_changes, remote_changes)
 
-            pool.stop()
+        # Process events from queue
+        # Workers handle their own network retries via retry_with_network_wait
+        pool.start()
 
-            # Display results summary
-            if conflicts:
-                click.echo(click.style("\nConflicts:", fg="yellow"))
-                for path in conflicts:
-                    click.echo(f"  ! {path}")
-                    # Send system notification
-                    notify_conflict(Path(path).name, "another machine")
+        while True:
+            event = queue.get(timeout=0.1)
+            if event is None:
+                # Queue is empty, check if pool is idle
+                if pool.active_count == 0 and pool.queue_size == 0:
+                    break
+                continue
 
-            if errors:
-                click.echo(click.style("\nErrors:", fg="red"))
-                for error in errors:
-                    click.echo(f"  ✗ {error}")
-
-            # Summary
-            total = len(uploaded) + len(downloaded) + len(deleted)
-            if total == 0 and not conflicts and not errors:
-                click.echo("Everything is up to date.")
+            # Determine transfer type
+            if event.event_type in (
+                SyncEventType.LOCAL_CREATED,
+                SyncEventType.LOCAL_MODIFIED,
+            ):
+                transfer_type = TransferType.UPLOAD
+                uploaded.append(event.path)
+                arrow = "↑"
+            elif event.event_type in (
+                SyncEventType.REMOTE_CREATED,
+                SyncEventType.REMOTE_MODIFIED,
+            ):
+                transfer_type = TransferType.DOWNLOAD
+                downloaded.append(event.path)
+                arrow = "↓"
+            elif event.event_type in (
+                SyncEventType.LOCAL_DELETED,
+                SyncEventType.REMOTE_DELETED,
+            ):
+                transfer_type = TransferType.DELETE
+                deleted.append(event.path)
+                arrow = "✗"
             else:
-                click.echo(
-                    f"\nSync complete: {len(uploaded)} uploaded, "
-                    f"{len(downloaded)} downloaded, "
-                    f"{len(deleted)} deleted, "
-                    f"{len(conflicts)} conflicts"
-                )
+                continue
 
-            # Report final state
-            if errors:
-                status_reporter.update_status(StatusUpdate(state=SyncStateEnum.ERROR))
-            else:
-                status_reporter.update_status(StatusUpdate(state=SyncStateEnum.IDLE))
+            if not no_progress:
+                click.echo(f"  {arrow} {event.path}")
 
-        except NETWORK_EXCEPTIONS as e:
-            pool.stop()
-            click.echo(f"Server connection lost: {e}")
-            status_reporter.update_status(StatusUpdate(state=SyncStateEnum.OFFLINE))
-            click.echo("Waiting for server to come back online...")
-            wait_for_network(
-                client,
-                on_waiting=lambda: None,
-                on_restored=lambda: click.echo("Server is back online!"),
+            # Submit to worker pool
+            pool.submit(
+                event=event,
+                transfer_type=transfer_type,
+                on_complete=on_complete,
+                on_error=on_error,
             )
-            # Retry sync after reconnection
-            click.echo("Retrying sync...")
-            run_sync()
-        except Exception as e:
-            pool.stop()
+
+            # Report progress with active counts and speeds
+            status_reporter.update_status(StatusUpdate(
+                state=SyncStateEnum.SYNCING,
+                files_pending=len(queue) + pool.queue_size,
+                uploads_in_progress=pool.active_uploads,
+                downloads_in_progress=pool.active_downloads,
+                upload_speed=pool.upload_speed,
+                download_speed=pool.download_speed,
+            ))
+
+        # Wait for all tasks to complete, updating status every 500ms
+        while pool.active_count > 0 or pool.queue_size > 0:
+            time.sleep(0.5)
+            status_reporter.update_status(StatusUpdate(
+                state=SyncStateEnum.SYNCING,
+                files_pending=pool.active_count + pool.queue_size,
+                uploads_in_progress=pool.active_uploads,
+                downloads_in_progress=pool.active_downloads,
+                upload_speed=pool.upload_speed,
+                download_speed=pool.download_speed,
+            ))
+
+        pool.stop()
+
+        # Display results summary
+        if conflicts:
+            click.echo(click.style("\nConflicts:", fg="yellow"))
+            for path in conflicts:
+                click.echo(f"  ! {path}")
+                notify_conflict(Path(path).name, "another machine")
+
+        if errors:
+            click.echo(click.style("\nErrors:", fg="red"))
+            for error in errors:
+                click.echo(f"  ✗ {error}")
+
+        # Summary
+        total = len(uploaded) + len(downloaded) + len(deleted)
+        if total == 0 and not conflicts and not errors:
+            click.echo("Everything is up to date.")
+        else:
+            click.echo(
+                f"\nSync complete: {len(uploaded)} uploaded, "
+                f"{len(downloaded)} downloaded, "
+                f"{len(deleted)} deleted, "
+                f"{len(conflicts)} conflicts"
+            )
+
+        # Report final state
+        if errors:
             status_reporter.update_status(StatusUpdate(state=SyncStateEnum.ERROR))
-            click.echo(f"Sync error: {e}", err=True)
+        else:
+            status_reporter.update_status(StatusUpdate(state=SyncStateEnum.IDLE))
 
     if watch:
         # Continuous sync with file watching

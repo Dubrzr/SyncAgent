@@ -23,6 +23,7 @@ from syncagent.client.sync.change_scanner import (
     ChangeScanner,
     LocalChanges,
     RemoteChanges,
+    emit_events,
 )
 from syncagent.client.sync.conflict import (
     generate_conflict_filename,
@@ -119,6 +120,8 @@ __all__ = [
     "ChangeScanner",
     "LocalChanges",
     "RemoteChanges",
+    # Functions
+    "emit_events",
     "FileDownloader",
     "FileUploader",
     # Event Queue & Coordinator
