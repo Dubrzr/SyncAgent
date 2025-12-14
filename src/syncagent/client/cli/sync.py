@@ -313,6 +313,7 @@ def sync(watch: bool, no_progress: bool) -> None:
                 files_pending=len(queue) + pool.queue_size,
                 uploads_in_progress=pool.active_uploads,
                 downloads_in_progress=pool.active_downloads,
+                hashing_in_progress=pool.active_hashing,
                 upload_speed=pool.upload_speed,
                 download_speed=pool.download_speed,
             ))

@@ -86,6 +86,7 @@
                         <span class="text-blue-600 sync-pending">0 pending</span>
                     </div>
                     <div class="flex items-center gap-3 text-xs text-blue-500">
+                        <span class="sync-hashing"># 0</span>
                         <span class="sync-uploads">↑ 0</span>
                         <span class="sync-downloads">↓ 0</span>
                         <span class="sync-speed">— KB/s</span>
@@ -264,6 +265,7 @@
                 if (syncInfoEl) {
                     syncInfoEl.classList.remove('hidden');
                     syncInfoEl.querySelector('.sync-pending').textContent = `${status.files_pending} pending`;
+                    syncInfoEl.querySelector('.sync-hashing').textContent = `# ${status.hashing_in_progress || 0}`;
                     syncInfoEl.querySelector('.sync-uploads').textContent = `↑ ${status.uploads_in_progress}`;
                     syncInfoEl.querySelector('.sync-downloads').textContent = `↓ ${status.downloads_in_progress}`;
                     const totalSpeed = status.upload_speed + status.download_speed;

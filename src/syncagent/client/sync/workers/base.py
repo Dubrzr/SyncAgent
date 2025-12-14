@@ -61,11 +61,15 @@ class WorkerContext:
         event: The sync event being processed.
         cancel_check: Function to check if cancellation was requested.
         on_progress: Optional progress callback (current_bytes, total_bytes).
+        on_hashing_start: Optional callback when hashing phase starts.
+        on_hashing_end: Optional callback when hashing phase ends.
     """
 
     event: SyncEvent
     cancel_check: Callable[[], bool] = field(default=lambda: False)
     on_progress: Callable[[int, int], None] | None = None
+    on_hashing_start: Callable[[], None] | None = None
+    on_hashing_end: Callable[[], None] | None = None
 
 
 class BaseWorker(ABC):
@@ -158,6 +162,8 @@ class BaseWorker(ABC):
         event: SyncEvent,
         on_progress: Callable[[int, int], None] | None = None,
         cancel_check: Callable[[], bool] | None = None,
+        on_hashing_start: Callable[[], None] | None = None,
+        on_hashing_end: Callable[[], None] | None = None,
     ) -> bool:
         """Execute the worker operation.
 
@@ -167,6 +173,8 @@ class BaseWorker(ABC):
             event: The sync event to process.
             on_progress: Optional callback (current_bytes, total_bytes).
             cancel_check: Optional external cancellation check function.
+            on_hashing_start: Optional callback when hashing phase starts.
+            on_hashing_end: Optional callback when hashing phase ends.
 
         Returns:
             True if successful, False otherwise.
@@ -193,6 +201,8 @@ class BaseWorker(ABC):
             event=event,
             cancel_check=combined_cancel_check,
             on_progress=on_progress,
+            on_hashing_start=on_hashing_start,
+            on_hashing_end=on_hashing_end,
         )
 
         try:

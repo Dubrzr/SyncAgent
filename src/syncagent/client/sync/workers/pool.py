@@ -131,6 +131,7 @@ class WorkerPool:
         # Active transfer counts
         self._active_uploads = 0
         self._active_downloads = 0
+        self._active_hashing = 0
 
     @property
     def state(self) -> PoolState:
@@ -169,6 +170,12 @@ class WorkerPool:
         """Get number of active download tasks."""
         with self._lock:
             return self._active_downloads
+
+    @property
+    def active_hashing(self) -> int:
+        """Get number of files currently being hashed."""
+        with self._lock:
+            return self._active_hashing
 
     @property
     def upload_speed(self) -> int:
@@ -373,6 +380,15 @@ class WorkerPool:
         # Track last progress for delta calculation
         last_bytes = [0]  # Use list to allow mutation in closure
 
+        # Hashing phase callbacks (for tracking hashing count)
+        def on_hashing_start() -> None:
+            with self._lock:
+                self._active_hashing += 1
+
+        def on_hashing_end() -> None:
+            with self._lock:
+                self._active_hashing -= 1
+
         def progress_wrapper(current: int, total: int) -> None:
             """Wrap progress callback to record bytes for speed calculation."""
             # Calculate delta since last progress update
@@ -389,11 +405,13 @@ class WorkerPool:
             # Create appropriate worker
             worker = self._create_worker(transfer_type)
 
-            # Execute with wrapped progress callback
+            # Execute with wrapped progress callback and hashing callbacks
             success = worker.execute(
                 event=task.event,
                 on_progress=progress_wrapper,
                 cancel_check=lambda: task.cancel_requested,
+                on_hashing_start=on_hashing_start if transfer_type == TransferType.UPLOAD else None,
+                on_hashing_end=on_hashing_end if transfer_type == TransferType.UPLOAD else None,
             )
 
             if success:

@@ -42,6 +42,7 @@ class MachineStatus:
         files_pending: Number of files waiting in queue.
         uploads_in_progress: Number of files currently being uploaded.
         downloads_in_progress: Number of files currently being downloaded.
+        hashing_in_progress: Number of files currently being hashed before upload.
         upload_speed: Upload speed in bytes/second.
         download_speed: Download speed in bytes/second.
         file_count: Number of files synced by this machine.
@@ -55,6 +56,7 @@ class MachineStatus:
     files_pending: int = 0
     uploads_in_progress: int = 0
     downloads_in_progress: int = 0
+    hashing_in_progress: int = 0
     upload_speed: int = 0
     download_speed: int = 0
     file_count: int = 0
@@ -70,6 +72,7 @@ class MachineStatus:
             "files_pending": self.files_pending,
             "uploads_in_progress": self.uploads_in_progress,
             "downloads_in_progress": self.downloads_in_progress,
+            "hashing_in_progress": self.hashing_in_progress,
             "upload_speed": self.upload_speed,
             "download_speed": self.download_speed,
             "file_count": self.file_count,
@@ -224,6 +227,7 @@ class StatusHub:
         files_pending: int | None = None,
         uploads_in_progress: int | None = None,
         downloads_in_progress: int | None = None,
+        hashing_in_progress: int | None = None,
         upload_speed: int | None = None,
         download_speed: int | None = None,
     ) -> None:
@@ -235,6 +239,7 @@ class StatusHub:
             files_pending: Number of files waiting in queue.
             uploads_in_progress: Number of files being uploaded.
             downloads_in_progress: Number of files being downloaded.
+            hashing_in_progress: Number of files being hashed before upload.
             upload_speed: Upload speed in bytes/second.
             download_speed: Download speed in bytes/second.
         """
@@ -283,6 +288,8 @@ class StatusHub:
                 status.uploads_in_progress = uploads_in_progress
             if downloads_in_progress is not None:
                 status.downloads_in_progress = downloads_in_progress
+            if hashing_in_progress is not None:
+                status.hashing_in_progress = hashing_in_progress
             if upload_speed is not None:
                 status.upload_speed = upload_speed
             if download_speed is not None:
@@ -329,6 +336,7 @@ class StatusHub:
                 files_pending=data.get("files_pending"),
                 uploads_in_progress=data.get("uploads_in_progress"),
                 downloads_in_progress=data.get("downloads_in_progress"),
+                hashing_in_progress=data.get("hashing_in_progress"),
                 upload_speed=data.get("upload_speed"),
                 download_speed=data.get("download_speed"),
             )

@@ -43,6 +43,7 @@ class StatusUpdate:
         files_pending: Number of files waiting in queue.
         uploads_in_progress: Number of files being uploaded.
         downloads_in_progress: Number of files being downloaded.
+        hashing_in_progress: Number of files being hashed before upload.
         upload_speed: Upload speed in bytes/second.
         download_speed: Download speed in bytes/second.
     """
@@ -51,6 +52,7 @@ class StatusUpdate:
     files_pending: int = 0
     uploads_in_progress: int = 0
     downloads_in_progress: int = 0
+    hashing_in_progress: int = 0
     upload_speed: int = 0
     download_speed: int = 0
 
@@ -62,6 +64,7 @@ class StatusUpdate:
             "files_pending": self.files_pending,
             "uploads_in_progress": self.uploads_in_progress,
             "downloads_in_progress": self.downloads_in_progress,
+            "hashing_in_progress": self.hashing_in_progress,
             "upload_speed": self.upload_speed,
             "download_speed": self.download_speed,
         }

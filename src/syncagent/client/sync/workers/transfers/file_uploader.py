@@ -57,6 +57,8 @@ class FileUploader:
         max_retries: int = DEFAULT_MAX_RETRIES,
         enable_early_conflict_check: bool = True,
         version_check_interval: int = VERSION_CHECK_INTERVAL,
+        on_hashing_start: Callable[[], None] | None = None,
+        on_hashing_end: Callable[[], None] | None = None,
     ) -> None:
         """Initialize the uploader.
 
@@ -68,6 +70,8 @@ class FileUploader:
             max_retries: Maximum retry attempts for chunk uploads.
             enable_early_conflict_check: Check version before/during upload (Phase 15.7).
             version_check_interval: Chunks between mid-transfer version checks.
+            on_hashing_start: Optional callback when hashing phase starts.
+            on_hashing_end: Optional callback when hashing phase ends.
         """
         self._client = client
         self._key = encryption_key
@@ -76,6 +80,8 @@ class FileUploader:
         self._max_retries = max_retries
         self._enable_early_conflict_check = enable_early_conflict_check
         self._version_check_interval = version_check_interval
+        self._on_hashing_start = on_hashing_start
+        self._on_hashing_end = on_hashing_end
 
     def upload_file(
         self,
@@ -117,13 +123,22 @@ class FileUploader:
         if self._enable_early_conflict_check and parent_version is not None:
             self._check_server_version(relative_path, parent_version, ConflictType.PRE_TRANSFER)
 
-        # Chunk the file
-        chunks = list(chunk_file(local_path))
-        chunk_hashes = [c.hash for c in chunks]
+        # Notify hashing start
+        if self._on_hashing_start:
+            self._on_hashing_start()
 
-        # Calculate file hash
-        content_hash = compute_file_hash(local_path)
-        size = local_path.stat().st_size
+        try:
+            # Chunk the file (computes chunk hashes)
+            chunks = list(chunk_file(local_path))
+            chunk_hashes = [c.hash for c in chunks]
+
+            # Calculate file hash
+            content_hash = compute_file_hash(local_path)
+            size = local_path.stat().st_size
+        finally:
+            # Notify hashing end (always, even on error)
+            if self._on_hashing_end:
+                self._on_hashing_end()
 
         # Check for existing upload progress (resume support)
         already_uploaded: set[str] = set()

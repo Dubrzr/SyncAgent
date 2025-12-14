@@ -90,12 +90,14 @@ class UploadWorker(BaseWorker):
             if ctx.on_progress:
                 ctx.on_progress(current, total)
 
-        # Create uploader with progress callback
+        # Create uploader with progress callback and hashing callbacks
         uploader = FileUploader(
             client=self._client,
             encryption_key=self._key,
             progress_callback=lambda p: progress_adapter(p.bytes_transferred, p.file_size),
             state=self._sync_state,
+            on_hashing_start=ctx.on_hashing_start,
+            on_hashing_end=ctx.on_hashing_end,
         )
 
         try:
