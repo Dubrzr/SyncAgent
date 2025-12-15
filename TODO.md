@@ -236,6 +236,33 @@
 
 **Fichiers:** `tests/integration/conftest.py`, `tests/integration/test_sync_e2e.py`, `tests/integration/test_conflict_e2e.py`, `.github/workflows/integration.yml`
 
+### CLI Integration Tests [DONE]
+
+Created comprehensive CLI integration tests using Click's CliRunner:
+
+- [x] **test_init.py**: Tests for init, reset, unlock commands (21 tests)
+- [x] **test_register.py**: Tests for server registration (11 tests)
+- [x] **test_sync.py**: Tests for sync operations (14 tests)
+- [x] **test_multi_client.py**: Multi-client E2EE sync scenarios (10 tests)
+- [x] **test_conflicts.py**: Conflict detection and resolution (8 tests)
+- [x] **test_sync_latency.py**: R9 <5s sync latency requirement (3 tests)
+
+**CLI Specs Created:**
+
+- [x] `docs/cli/init.md` - Initialize keystore and sync folder
+- [x] `docs/cli/reset.md` - Reset SyncAgent configuration
+- [x] `docs/cli/unlock.md` - Unlock the keystore
+- [x] `docs/cli/register.md` - Register machine with server
+- [x] `docs/cli/sync.md` - Synchronize files
+- [x] `docs/cli/server.md` - Start the SyncAgent server
+
+**Key Fixes:**
+
+- [x] Fixed `import_key` bug in `src/syncagent/client/keystore.py` - was saving OLD encrypted key instead of imported one
+- [x] Rewrote `server` CLI command to actually start the server using uvicorn with options
+
+**Fichiers:** `tests/integration/cli/`, `docs/cli/`
+
 ---
 
 ## Phase 14: Sync Optimizations

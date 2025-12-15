@@ -38,7 +38,7 @@ Synchronisation de fichiers entre 3-4 machines (Windows/macOS/Linux) avec chiffr
 ### R3. Gestion des conflits
 - [ ] Détection automatique des conflits
 - [ ] Stratégie : duplication des fichiers conflictuels
-- [ ] Nommage clair : `fichier (conflit - machine).ext`
+- [ ] Nommage clair : `fichier.conflict-YYYYMMDD-HHMMSS-machine.ext` (timestamp évite les collisions)
 - [ ] Résolution manuelle par l'utilisateur
 
 ### R4. Stockage
@@ -1088,14 +1088,14 @@ if fileA
 Quand deux machines modifient le même fichier depuis la même version de base :
 ```
 document.txt                        ← Version principale (ou locale)
-document (conflit - laptop).txt     ← Version du laptop
-document (conflit - desktop).txt    ← Version du desktop
+document.conflict-20250115-143022456-laptop.txt   ← Version du laptop
+document.conflict-20250115-143025789-desktop.txt  ← Version du desktop
 ```
 
 ### 5.1bis Cas particulier : Delete vs Modify
 Si machine A supprime un fichier et machine B le modifie (en parallèle) :
 - **La modification gagne** → le fichier n'est PAS supprimé
-- Créer un fichier conflit : `document (conflit - machineB).ext`
+- Créer un fichier conflit : `document.conflict-YYYYMMDD-HHMMSS-machineB.ext`
 - Marquer comme conflit à résoudre par l'utilisateur
 - L'utilisateur peut ensuite :
   - Garder le fichier modifié
@@ -1130,7 +1130,9 @@ def handle_conflicts():
             version_id = branch['version_id']
 
             # Créer le fichier conflit
-            conflict_path = f"{file_path} (conflit - {machine_name})"
+            timestamp = datetime.now().strftime("%Y%m%d-%H%M%S%f")[:-3]
+            stem, ext = os.path.splitext(file_path)
+            conflict_path = f"{stem}.conflict-{timestamp}-{machine_name}{ext}"
             download_file(conflict['file_id'], version_id, conflict_path)
 ```
 
