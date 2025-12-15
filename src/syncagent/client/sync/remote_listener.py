@@ -99,6 +99,7 @@ class RemoteChangeListener:
         # Thread and loop
         self._thread: threading.Thread | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._stop_event: asyncio.Event | None = None  # For interruptible sleep
 
         # Scanner for fetching missed changes
         from pathlib import Path
@@ -133,10 +134,18 @@ class RemoteChangeListener:
         """Stop the listener."""
         self._should_run = False
 
-        if self._loop and self._ws:
+        # Signal stop event to interrupt any sleeps
+        if self._loop and self._stop_event:
             asyncio.run_coroutine_threadsafe(
-                self._close_connection(), self._loop
-            ).result(timeout=5.0)
+                self._signal_stop(), self._loop
+            )
+
+        # Close WebSocket connection
+        if self._loop and self._ws:
+            with contextlib.suppress(TimeoutError):
+                asyncio.run_coroutine_threadsafe(
+                    self._close_connection(), self._loop
+                ).result(timeout=2.0)
 
         if self._thread:
             self._thread.join(timeout=5.0)
@@ -144,16 +153,23 @@ class RemoteChangeListener:
 
         logger.info("RemoteChangeListener stopped")
 
+    async def _signal_stop(self) -> None:
+        """Signal the stop event to interrupt sleeps."""
+        if self._stop_event:
+            self._stop_event.set()
+
     def _run_loop(self) -> None:
         """Run the async event loop in a thread."""
         self._loop = asyncio.new_event_loop()
         asyncio.set_event_loop(self._loop)
+        self._stop_event = asyncio.Event()
 
         try:
             self._loop.run_until_complete(self._connection_loop())
         finally:
             self._loop.close()
             self._loop = None
+            self._stop_event = None
 
     async def _connection_loop(self) -> None:
         """Main connection loop with automatic reconnection."""
@@ -193,7 +209,17 @@ class RemoteChangeListener:
                 "RemoteChangeListener reconnecting in %.0fs...",
                 self._reconnect_delay,
             )
-            await asyncio.sleep(self._reconnect_delay)
+            # Use interruptible sleep - will wake on stop signal
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(),  # type: ignore[union-attr]
+                    timeout=self._reconnect_delay,
+                )
+                # If we get here, stop was signaled
+                break
+            except TimeoutError:
+                # Normal timeout, continue reconnect loop
+                pass
 
     async def _connect(self) -> None:
         """Establish WebSocket connection."""
@@ -204,7 +230,12 @@ class RemoteChangeListener:
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
 
-        self._ws = await websockets.connect(self.ws_url, ssl=ssl_context)
+        self._ws = await websockets.connect(
+            self.ws_url,
+            ssl=ssl_context,
+            open_timeout=10,
+            close_timeout=5,
+        )
         self._connected = True
         logger.info("RemoteChangeListener connected")
 

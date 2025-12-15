@@ -82,23 +82,30 @@ class TestWebSocketPushNotifications:
         test_server: TestServer,
     ) -> None:
         """Admin delete should send push notification via WebSocket."""
+        # Setup two clients - A will listen, B (or admin) will delete
         config_a, sync_a = setup_client(cli_runner, tmp_path, test_server, "client-a")
+        config_b, sync_b = setup_client(cli_runner, tmp_path, test_server, "client-b", import_key_from=config_a)
 
-        # Upload a file
-        (sync_a / "push_test.txt").write_text("Delete via admin")
+        # Client A uploads a file
+        (sync_a / "push_test.txt").write_text("Delete via other client")
         do_sync(cli_runner, config_a)
 
-        # Get auth token for WebSocket connection
+        # Client B syncs to get the file
+        do_sync(cli_runner, config_b)
+
+        # Get auth tokens
         from syncagent.client.cli.config import load_config
 
         with PatchedCLI(config_a):
-            config = load_config()
+            config_a_data = load_config()
+        with PatchedCLI(config_b):
+            config_b_data = load_config()
 
-        # Connect to WebSocket
-        ws_url = test_server.url.replace("http://", "ws://") + f"/ws/client/{config['auth_token']}"
-        messages = []
+        # Client A connects to WebSocket to listen
+        ws_url = test_server.url.replace("http://", "ws://") + f"/ws/client/{config_a_data['auth_token']}"
+        messages: list[dict] = []
 
-        async def listen_for_messages():
+        async def listen_for_messages() -> None:
             async with websockets.connect(ws_url) as ws:
                 try:
                     # Wait for messages with timeout
@@ -113,18 +120,18 @@ class TestWebSocketPushNotifications:
         # Wait a bit for connection to establish
         await asyncio.sleep(0.5)
 
-        # Admin deletes via API (this should trigger push)
+        # Client B deletes via API (this should trigger push to Client A)
         import httpx
         response = httpx.delete(
             f"{test_server.url}/api/files/push_test.txt",
-            headers={"Authorization": f"Bearer {config['auth_token']}"},
+            headers={"Authorization": f"Bearer {config_b_data['auth_token']}"},
         )
         assert response.status_code == 204
 
         # Wait for message
         await listen_task
 
-        # Verify we received the push notification
+        # Verify Client A received the push notification
         assert len(messages) >= 1
         file_change_msg = next(
             (m for m in messages if m.get("type") == "file_change"),
@@ -141,24 +148,33 @@ class TestWebSocketPushNotifications:
         test_server: TestServer,
     ) -> None:
         """RemoteChangeListener should receive push events and emit to queue."""
+        import httpx
+
         from syncagent.client.api import HTTPClient
         from syncagent.client.state import LocalSyncState
 
+        # Setup two clients - A will listen, B will delete
         config_a, sync_a = setup_client(cli_runner, tmp_path, test_server, "client-a")
+        config_b, sync_b = setup_client(cli_runner, tmp_path, test_server, "client-b", import_key_from=config_a)
 
-        # Upload a file
+        # Client A uploads a file
         (sync_a / "listener_test.txt").write_text("Test content")
         do_sync(cli_runner, config_a)
 
-        # Setup listener
+        # Client B syncs to get the file
+        do_sync(cli_runner, config_b)
+
+        # Setup listener for Client A
         from syncagent.client.cli.config import load_config
 
         with PatchedCLI(config_a):
-            config = load_config()
+            config_a_data = load_config()
+        with PatchedCLI(config_b):
+            config_b_data = load_config()
 
         server_config = ServerConfig(
-            server_url=config["server_url"],
-            token=config["auth_token"],
+            server_url=config_a_data["server_url"],
+            token=config_a_data["auth_token"],
         )
         client = HTTPClient(server_config)
         state = LocalSyncState(config_a / "state.db")
@@ -176,8 +192,12 @@ class TestWebSocketPushNotifications:
         # Wait for connection
         time.sleep(1.0)
 
-        # Admin deletes via server
-        test_server.db.delete_file("listener_test.txt", machine_id=None)
+        # Client B deletes via API (triggers push to Client A)
+        response = httpx.delete(
+            f"{test_server.url}/api/files/listener_test.txt",
+            headers={"Authorization": f"Bearer {config_b_data['auth_token']}"},
+        )
+        assert response.status_code == 204
 
         # Wait for push notification
         time.sleep(2.0)
