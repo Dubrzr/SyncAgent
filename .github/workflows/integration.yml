@@ -30,6 +30,7 @@ jobs:
           pip install -e ".[all]"
 
       - name: Run integration tests
+        timeout-minutes: 30
         run: |
           python -m pytest tests/integration/ -v --tb=short -m "not slow"
 

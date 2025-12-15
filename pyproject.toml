@@ -73,6 +73,7 @@ dev = [
     "pytest-asyncio>=0.24.0",
     "pytest-cov>=6.0.0",
     "pytest-httpx>=0.35.0",
+    "pytest-timeout>=2.3.0",
     "ruff>=0.8.0",
     "mypy>=1.13.0",
     # Type stubs for mypy
@@ -159,6 +160,7 @@ warn_unused_ignores = false
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+timeout = 120  # 2 minutes per test to catch hangs
 markers = [
     "slow: marks tests as slow (100MB+ file transfers)",
 ]
