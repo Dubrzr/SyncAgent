@@ -306,7 +306,12 @@ class StatusReporter:
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
 
-        self._ws = await websockets.connect(self.ws_url, ssl=ssl_context)
+        self._ws = await websockets.connect(
+            self.ws_url,
+            ssl=ssl_context,
+            open_timeout=10,  # 10 second timeout for connection
+            close_timeout=5,  # 5 second timeout for close
+        )
         self._connected = True
         logger.info("StatusReporter connected to server")
 

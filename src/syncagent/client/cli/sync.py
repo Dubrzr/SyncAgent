@@ -35,7 +35,7 @@ class StatusLineAwareHandler(logging.Handler):
         self,
         clear_func: Callable[[], None],
         update_func: Callable[[], None],
-        lock: threading.Lock,
+        lock: threading.Lock | threading.RLock,
     ) -> None:
         super().__init__()
         self._clear_func = clear_func
@@ -149,7 +149,7 @@ def sync(watch: bool, no_progress: bool) -> None:
     # Track currently in-progress transfers for real-time display
     in_progress: dict[str, str] = {}  # path -> arrow symbol
     last_status_len = 0  # Track length of last status line for clearing
-    progress_lock = threading.Lock()
+    progress_lock = threading.RLock()  # RLock allows re-entrant acquisition (needed by StatusLineAwareHandler)
 
     def clear_status_line() -> None:
         """Clear the current status line."""
@@ -187,6 +187,12 @@ def sync(watch: bool, no_progress: bool) -> None:
             last_status_len = len(status)
 
     # Install status-line-aware logging handler to prevent log interleaving
+    # We save the original state to restore it at the end (important for tests)
+    syncagent_logger = logging.getLogger("syncagent")
+    original_handlers = syncagent_logger.handlers[:]
+    original_level = syncagent_logger.level
+    original_propagate = syncagent_logger.propagate
+
     if not no_progress:
         status_handler = StatusLineAwareHandler(
             clear_func=clear_status_line,
@@ -197,7 +203,6 @@ def sync(watch: bool, no_progress: bool) -> None:
         status_handler.setLevel(logging.WARNING)  # Only show warnings and errors
 
         # Replace handlers on syncagent logger to prevent interleaving
-        syncagent_logger = logging.getLogger("syncagent")
         # Remove any existing handlers
         for handler in syncagent_logger.handlers[:]:
             syncagent_logger.removeHandler(handler)
@@ -429,3 +434,11 @@ def sync(watch: bool, no_progress: bool) -> None:
         status_reporter.update_status(StatusUpdate(state=SyncStateEnum.IDLE))
 
     status_reporter.stop()
+
+    # Restore original logging configuration (important for tests)
+    for handler in syncagent_logger.handlers[:]:
+        syncagent_logger.removeHandler(handler)
+    for handler in original_handlers:
+        syncagent_logger.addHandler(handler)
+    syncagent_logger.setLevel(original_level)
+    syncagent_logger.propagate = original_propagate
