@@ -178,6 +178,34 @@ gunicorn syncagent.server.app:app -w 4 -k uvicorn.workers.UvicornWorker \
   -b 0.0.0.0:443 --certfile=cert.pem --keyfile=key.pem
 ```
 
+### Docker
+
+```bash
+# Build the image
+docker build -t syncagent-server .
+
+# Run with local storage
+docker run -d -p 8000:8000 \
+  -v syncagent-data:/data \
+  --name syncagent \
+  syncagent-server
+
+# Run with S3 storage
+docker run -d -p 8000:8000 \
+  -v syncagent-data:/data \
+  -e SYNCAGENT_S3_BUCKET=your-bucket \
+  -e SYNCAGENT_S3_ENDPOINT=https://s3.region.ovh.net \
+  -e SYNCAGENT_S3_ACCESS_KEY=your-key \
+  -e SYNCAGENT_S3_SECRET_KEY=your-secret \
+  --name syncagent \
+  syncagent-server
+```
+
+The container stores all data in `/data`:
+- `/data/syncagent.db` - SQLite database
+- `/data/storage/` - Local chunk storage (when not using S3)
+- `/data/logs/` - Server logs
+
 ## Web Dashboard
 
 The web UI provides:
