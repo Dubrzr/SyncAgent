@@ -41,7 +41,8 @@ class MtimeAwareComparator:
         old_mtime = old_event.metadata.get("mtime")
         new_mtime = new_event.metadata.get("mtime")
 
-        if old_mtime is not None and new_mtime is not None:
+        # Type guard: mtime values are always floats when present
+        if isinstance(old_mtime, int | float) and isinstance(new_mtime, int | float):
             if new_mtime < old_mtime:
                 return False  # Keep old (more recent file state)
             if new_mtime == old_mtime:

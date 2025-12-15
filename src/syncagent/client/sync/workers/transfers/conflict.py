@@ -15,6 +15,14 @@ from syncagent.client.sync.domain.conflicts import (
     RaceConditionError,
 )
 
+__all__ = [
+    "ConflictOutcome",
+    "RaceConditionError",
+    "ConflictResolution",
+    "resolve_upload_conflict",
+    "safe_rename_for_conflict",
+]
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,7 +70,7 @@ def resolve_upload_conflict(
     """
     from syncagent.client.notifications import notify_conflict
     from syncagent.client.state import FileStatus
-    from syncagent.client.sync.transfers import FileDownloader
+    from syncagent.client.sync.workers.transfers import FileDownloader
     from syncagent.core.crypto import compute_file_hash
 
     # 1. Get server file info
@@ -76,11 +84,14 @@ def resolve_upload_conflict(
     if local_hash == server_hash:
         # Same content - not a real conflict!
         logger.info(f"False conflict for {relative_path}: hashes match, marking as synced")
+        local_stat = local_path.stat()
         state.mark_synced(
             relative_path,
             server_file_id=server_file.id,
             server_version=server_version,
             chunk_hashes=[],  # Not needed for conflict resolution
+            local_mtime=local_stat.st_mtime,
+            local_size=local_stat.st_size,
         )
         return ConflictResolution(
             outcome=ConflictOutcome.ALREADY_SYNCED,
@@ -102,11 +113,14 @@ def resolve_upload_conflict(
 
     # 5. Update state DB
     # Mark the original path as synced with server version
+    downloaded_stat = local_path.stat()
     state.mark_synced(
         relative_path,
         server_file_id=server_file.id,
         server_version=server_version,
         chunk_hashes=[],  # Not needed for conflict resolution
+        local_mtime=downloaded_stat.st_mtime,
+        local_size=downloaded_stat.st_size,
     )
 
     # Add the conflict file to state as NEW (will be uploaded on next sync)

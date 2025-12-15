@@ -54,5 +54,5 @@ class ServerConfig:
         """
         return self.server_url.startswith("https://")
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         return f"server_url={self.server_url} (timeout={self.timeout})"
