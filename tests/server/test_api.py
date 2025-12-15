@@ -12,7 +12,7 @@ from syncagent.server.storage import LocalFSStorage
 
 
 @pytest.fixture
-def db(tmp_path: Path) -> Generator[Database, None, None]:
+def db(tmp_path: Path) -> Generator[Database]:
     """Create a test database."""
     database = Database(tmp_path / "test.db")
     yield database

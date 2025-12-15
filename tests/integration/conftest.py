@@ -141,7 +141,7 @@ def encryption_key() -> bytes:
 
 
 @pytest.fixture
-def test_server(tmp_path: Path) -> Generator[TestServer, None, None]:
+def test_server(tmp_path: Path) -> Generator[TestServer]:
     """Create and start a test server with in-memory DB and local storage."""
     # Create database and storage
     db_path = tmp_path / "server" / "test.db"
@@ -176,7 +176,7 @@ def client_factory(
     tmp_path: Path,
     test_server: TestServer,
     encryption_key: bytes,
-) -> Generator[Any, None, None]:
+) -> Generator[Any]:
     """Factory fixture to create multiple test clients."""
     clients: list[SyncTestClient] = []
     client_counter = 0

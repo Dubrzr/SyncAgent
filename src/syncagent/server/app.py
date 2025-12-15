@@ -119,7 +119,7 @@ def create_app(
         )
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         """Application lifespan handler for startup/shutdown."""
         # Startup
         db_path = getattr(db, "_db_path", "in-memory")
