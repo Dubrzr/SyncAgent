@@ -31,6 +31,8 @@ from syncagent.server.storage import LocalFSStorage
 class TestServer:
     """Container for test server resources."""
 
+    __test__ = False  # Prevent pytest from collecting this as a test class
+
     db: Database
     storage: LocalFSStorage
     url: str

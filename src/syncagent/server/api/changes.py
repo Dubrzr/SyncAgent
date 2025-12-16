@@ -23,7 +23,7 @@ def get_changes(
     since: str = Query(
         ...,
         description="ISO 8601 timestamp. Get changes after this time.",
-        example="2024-01-01T00:00:00Z",
+        examples=["2024-01-01T00:00:00Z"],
     ),
     limit: int = Query(
         default=1000,

@@ -164,6 +164,16 @@ timeout = 120  # 2 minutes per test to catch hangs
 markers = [
     "slow: marks tests as slow (100MB+ file transfers)",
 ]
+filterwarnings = [
+    # pytest-timeout config option not recognized by older pytest versions
+    "ignore:Unknown config option. timeout:pytest.PytestConfigWarning",
+    # websockets library deprecation (will be fixed in future uvicorn/websockets versions)
+    "ignore:websockets.legacy is deprecated:DeprecationWarning",
+    "ignore:websockets.server.WebSocketServerProtocol is deprecated:DeprecationWarning",
+    "ignore:remove second argument of ws_handler:DeprecationWarning",
+    # starlette testclient cookie deprecation
+    "ignore:Setting per-request cookies=:DeprecationWarning",
+]
 
 [tool.coverage.run]
 source = ["src/syncagent"]
